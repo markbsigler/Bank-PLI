@@ -16,7 +16,7 @@
  %PROCESS LIMITS(FIXEDDEC(15,2));
  %PROCESS LIST MAP SELECT OFFSET;
  %PROCESS CICS STMT SQL;
- %PROCESS AGGREGATE ATTRIBUTESLANGLVL(SAA2);
+ %PROCESS AGGREGATE ATTRIBUTES LANGLVL(SAA2);
  %PROCESS LIMITS(NAME(31)) LIMITS(EXTNAME(31));
 
  /* Conditional compilation for debug builds */
@@ -38,6 +38,11 @@
    %INCLUDE TXNSTR;
    %INCLUDE SQLCA;
    %INCLUDE CICSDEF;
+   /* Preprocessor guards for ERRHAND file-specific handlers */
+   %DECLARE ERRHAND_HAS_CUSTFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_ACCTFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_TXNFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_REPORT BIT VALUE('0'B);
    %INCLUDE ERRHAND;
 
    /*-----------------------------------------------------------------*/
@@ -56,7 +61,7 @@
    /*-----------------------------------------------------------------*/
    DECLARE CURRENT_USER        CHAR(8) STATIC;
    DECLARE CURRENT_TERMINAL    CHAR(4) STATIC;
-   DECLARE SESSION_START       TIMESTAMP_T STATIC;
+   DECLARE SESSION_START       TIMESTAMP_T STATIC INIT('');
    DECLARE REQUEST_COUNT       FIXED BIN(31) STATIC INIT(0);
 
    /*-----------------------------------------------------------------*/
@@ -368,11 +373,9 @@
    /*-----------------------------------------------------------------*/
    /* External Procedure References - Not defined here                */
    /*-----------------------------------------------------------------*/
-   %IF ¬PRODUCTION %THEN %DO;
-     /* Debug mode - declare stubs */
-     DECLARE TOTAL_REQUESTS FIXED BIN(31) EXTERNAL;
-     DECLARE TOTAL_APPROVALS FIXED BIN(31) EXTERNAL;
-     DECLARE TOTAL_DENIALS FIXED BIN(31) EXTERNAL;
-   %END;
+   /* External references to credit scoring counters (BNKCREDT) */
+   DECLARE TOTAL_REQUESTS FIXED BIN(31) EXTERNAL;
+   DECLARE TOTAL_APPROVALS FIXED BIN(31) EXTERNAL;
+   DECLARE TOTAL_DENIALS FIXED BIN(31) EXTERNAL;
 
  END BNKMAIN;

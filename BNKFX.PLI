@@ -12,7 +12,7 @@
  /*********************************************************************/
 
  %PROCESS RULES(IBM) MARGINS(2,72) SOURCE XREF;
- %PROCESS PACKAGE AGGREGATE LIMITS(NAME(31));
+ %PROCESS AGGREGATE LIMITS(NAME(31));
 
  BNKFX: PROCEDURE OPTIONS(MAIN, REENTRANT) REORDER;
 
@@ -21,6 +21,12 @@
    /*-----------------------------------------------------------------*/
    %INCLUDE BNKPKG;
    %INCLUDE TXNSTR;
+   %INCLUDE PICFMT;
+   /* Preprocessor guards for ERRHAND file-specific handlers */
+   %DECLARE ERRHAND_HAS_CUSTFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_ACCTFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_TXNFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_REPORT BIT VALUE('0'B);
    %INCLUDE ERRHAND;
 
    /*-----------------------------------------------------------------*/
@@ -29,7 +35,7 @@
    
    /* WIDECHAR for Unicode customer names (UTF-16) */
    DECLARE CUSTOMER_NAME_INTL     WIDECHAR(100) VARYING;
-   DECLARE BENEFICIARY_NAME       WIDECHAR(80) VARYING;
+   DECLARE INTL_BENEFICIARY_NAME WIDECHAR(80) VARYING;
    DECLARE PAYMENT_MEMO           WIDECHAR(140) VARYING;
    
    /* GRAPHIC for DBCS currency symbols and Asian characters */
@@ -146,8 +152,8 @@
      CUSTOMER_NAME_INTL = 'François Müller';
      PUT SKIP LIST('Customer: ' || CUSTOMER_NAME_INTL);
      
-     BENEFICIARY_NAME = '山田太郎';  /* Japanese: Yamada Taro */
-     PUT SKIP LIST('Beneficiary: ' || BENEFICIARY_NAME);
+     INTL_BENEFICIARY_NAME = '山田太郎';  /* Japanese: Yamada Taro */
+     PUT SKIP LIST('Beneficiary: ' || INTL_BENEFICIARY_NAME);
      
      PAYMENT_MEMO = 'Payment for services - 服务付款';
      PUT SKIP LIST('Memo: ' || PAYMENT_MEMO);
@@ -292,9 +298,12 @@
      PACKED_VALUE = DECIMAL(BINARY_VALUE, 15, 2);
      PUT SKIP LIST('DECIMAL(54321): ' || TRIM(PACKED_VALUE));
      
-     /* Use for bit-level currency flag encoding */
-     FX_RATE_TABLE(1).RATE_FLAGS = BINARY(1, 8, 0);  /* Binary 1 */
-     FX_RATE_TABLE(2).RATE_FLAGS = BINARY(128, 8, 0); /* Binary 10000000 */
+     /* Use UNSPEC to convert integer to bit-string flag encoding */
+     DECLARE TEMP_FLAG FIXED BIN(8);
+     TEMP_FLAG = 1;
+     FX_RATE_TABLE(1).RATE_FLAGS = UNSPEC(TEMP_FLAG);
+     TEMP_FLAG = 128;
+     FX_RATE_TABLE(2).RATE_FLAGS = UNSPEC(TEMP_FLAG);
      
      PUT SKIP LIST('Flag encoding complete');
 

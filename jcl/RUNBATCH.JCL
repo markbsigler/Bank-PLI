@@ -69,7 +69,7 @@
 //SEQFILE  DD DSN=BANK.TRANSACTION.SEQ,DISP=(NEW,CATLG,DELETE),
 //            UNIT=SYSDA,
 //            SPACE=(CYL,(5,2),RLSE),
-//            DCB=(DSORG=PS,RECFM=FB,LRECL=200,BLKSIZE=27800)
+//            DCB=(DSORG=PS,RECFM=FB,LRECL=2048,BLKSIZE=26624)
 //*
 //*--------------------------------------------------------------------*
 //* Regional(1) Direct Access File                                    *
@@ -89,23 +89,6 @@
 //REPORT   DD SYSOUT=*,
 //            DCB=(RECFM=FBA,LRECL=133,BLKSIZE=1330)
 //*
-//*--------------------------------------------------------------------*
-//* Additional output files for BNKAUDIT if needed                    *
-//*--------------------------------------------------------------------*
-//AUDIT    DD DSN=BANK.AUDIT.LOG,DISP=(MOD,KEEP),
-//            UNIT=SYSDA,
-//            SPACE=(CYL,(2,1),RLSE),
-//            DCB=(RECFM=FBA,LRECL=133,BLKSIZE=13300)
-//*
-//DETAIL   DD DSN=BANK.DETAIL.REPORT,DISP=(NEW,CATLG,DELETE),
-//            UNIT=SYSDA,
-//            SPACE=(CYL,(3,1),RLSE),
-//            DCB=(RECFM=FBA,LRECL=133,BLKSIZE=13300)
-//*
-//SUMMARY  DD DSN=BANK.SUMMARY.REPORT,DISP=(NEW,CATLG,DELETE),
-//            UNIT=SYSDA,
-//            SPACE=(CYL,(1,1),RLSE),
-//            DCB=(RECFM=FBA,LRECL=81,BLKSIZE=8100)
 //*
 //*--------------------------------------------------------------------*
 //* DB2 Plan allocation                                               *
@@ -122,18 +105,25 @@
 //*--------------------------------------------------------------------*
 //* Step 2 (Optional): Run BNKAUDIT - Audit log analysis              *
 //*--------------------------------------------------------------------*
-//AUDIT    EXEC PGM=BNKAUDIT,COND=(0,NE)
+//AUDITRUN EXEC PGM=BNKAUDIT,COND=(0,NE)
 //STEPLIB  DD DSN=BANK.LOADLIB,DISP=SHR
 //         DD DSN=CEE.SCEERUN,DISP=SHR
 //         DD DSN=PLI.V6R1M0.SIBMZRUN,DISP=SHR
 //*
-//AUDITLOG DD DSN=BANK.AUDIT.LOG,DISP=SHR
+//AUDITLOG DD DSN=BANK.AUDIT.LOG,DISP=(MOD,KEEP),
+//            UNIT=SYSDA,
+//            SPACE=(CYL,(2,1),RLSE),
+//            DCB=(RECFM=FBA,LRECL=133,BLKSIZE=13300)
 //*
-//DETAILRP DD SYSOUT=*,
-//            DCB=(RECFM=FBA,LRECL=133)
+//DETAILRP DD DSN=BANK.DETAIL.REPORT,DISP=(NEW,CATLG,DELETE),
+//            UNIT=SYSDA,
+//            SPACE=(CYL,(3,1),RLSE),
+//            DCB=(RECFM=FBA,LRECL=133,BLKSIZE=13300)
 //*
-//SUMMARYR DD SYSOUT=*,
-//            DCB=(RECFM=FBA,LRECL=81)
+//SUMMARYR DD DSN=BANK.SUMMARY.REPORT,DISP=(NEW,CATLG,DELETE),
+//            UNIT=SYSDA,
+//            SPACE=(CYL,(1,1),RLSE),
+//            DCB=(RECFM=FBA,LRECL=81,BLKSIZE=8100)
 //*
 //SYSOUT   DD SYSOUT=*
 //SYSUDUMP DD SYSOUT=*
@@ -176,7 +166,7 @@
 //*ACCTFILE DD DSN=BANK.ACCOUNT.MASTER,DISP=SHR
 //*SEQFILE  DD DSN=BANK.TRANSACTION.SEQ,DISP=(NEW,CATLG,DELETE),
 //*            UNIT=SYSDA,SPACE=(CYL,(5,2)),
-//*            DCB=(RECFM=FB,LRECL=200,BLKSIZE=27800)
+//*            DCB=(RECFM=FB,LRECL=2048,BLKSIZE=26624)
 //*REGFILE  DD DSN=BANK.REGIONAL.DATA,DISP=SHR
 //*REPORT   DD SYSOUT=*
 //*SYSOUT   DD SYSOUT=*

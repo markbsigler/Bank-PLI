@@ -11,7 +11,7 @@
  /*********************************************************************/
 
  %PROCESS RULES(IBM) MARGINS(2,72) SOURCE XREF;
- %PROCESS PACKAGE AGGREGATE LIMITS(NAME(31));
+ %PROCESS AGGREGATE LIMITS(NAME(31));
 
  BNKARCH: PROCEDURE OPTIONS(MAIN, REENTRANT) REORDER;
 
@@ -20,6 +20,11 @@
    /*-----------------------------------------------------------------*/
    %INCLUDE BNKPKG;
    %INCLUDE TXNSTR;
+   /* Preprocessor guards for ERRHAND file-specific handlers */
+   %DECLARE ERRHAND_HAS_CUSTFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_ACCTFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_TXNFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_REPORT BIT VALUE('0'B);
    %INCLUDE ERRHAND;
 
    /*-----------------------------------------------------------------*/
@@ -190,8 +195,8 @@
      DO I = 1 TO 10;
        LOOKUP_KEY = 'TXN' || TRIM(I);
        
-       /* LOCATE provides pointer to buffer - no data copy */
-       LOCATE ARCHIVE_RECORD FILE(AUDIT_DIRECT) KEY(LOOKUP_KEY);
+       /* READ ... SET provides pointer to buffer - no data copy */
+       READ FILE(AUDIT_DIRECT) SET(ARCHIVE_PTR) KEY(LOOKUP_KEY);
        
        /* Modify record directly in buffer */
        ARCHIVE_RECORD.COMPLIANCE_FLAGS = '1000000000000000'B;

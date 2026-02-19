@@ -25,6 +25,11 @@
    %INCLUDE CUSTSTR;
    %INCLUDE SQLCA;
    %INCLUDE CICSDEF;
+   /* Preprocessor guards for ERRHAND file-specific handlers */
+   %DECLARE ERRHAND_HAS_CUSTFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_ACCTFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_TXNFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_REPORT BIT VALUE('0'B);
    %INCLUDE ERRHAND;
 
    /* Local declarations */
@@ -287,7 +292,7 @@
             :CUSTOMER_MASTER.BANKING_INFO.ACCOUNT_COUNT,
             :CUSTOMER_MASTER.BANKING_INFO.LAST_TRANSACTION
        FROM CUSTOMER_TABLE
-       WHERE CUSTOMER_ID = :SQL_CUST_ID;
+       WHERE CUSTOMER_ID = :NUMERIC_ID;
      
      SELECT (SQLCODE);
        WHEN (SQL_SUCCESS) DO;
@@ -339,9 +344,9 @@
        RECORD_COUNT = RECORD_COUNT + 1;
        
        /* Display to operator console - DISPLAY built-in */
-       CALL DISPLAY('Customer: ' || TRIM(SQL_CUST_ID) ||
-                   ' - ' || TRIM(SQL_FIRST_NAME) ||
-                   ' ' || TRIM(SQL_LAST_NAME));
+       DISPLAY('Customer: ' || TRIM(SQL_CUST_ID) ||
+              ' - ' || TRIM(SQL_FIRST_NAME) ||
+              ' ' || TRIM(SQL_LAST_NAME));
        
        /* Store in work area for later */
        /* ... additional processing ... */
@@ -437,7 +442,7 @@
    /* Create Customer Record - Embedded SQL INSERT                    */
    /*-----------------------------------------------------------------*/
    CREATE_CUSTOMER_RECORD: PROCEDURE;
-     CALL GEN_CUSTOMER_NUM(CUSTOMER_MASTER.CUSTOMER_ID);
+     CUSTOMER_MASTER.CUSTOMER_ID = GEN_CUSTOMER_NUM();
      CUSTOMER_MASTER.AUDIT_INFO.CREATED_BY = USERID;
      CUSTOMER_MASTER.AUDIT_INFO.CREATED_DATE = TIMESTAMP;
      
@@ -524,7 +529,7 @@
 
    DISPLAY_ERROR: PROCEDURE(MSG);
      DECLARE MSG CHAR(*) VARYING;
-     CALL DISPLAY('ERROR: ' || MSG);
+     DISPLAY('ERROR: ' || MSG);
    END DISPLAY_ERROR;
 
    FLAG_FOR_MANUAL_REVIEW: PROCEDURE(REASON);

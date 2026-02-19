@@ -25,12 +25,16 @@
    %INCLUDE TXNSTR;
    %INCLUDE SQLCA;
    %INCLUDE CICSDEF;
+   /* Preprocessor guards for ERRHAND file-specific handlers */
+   %DECLARE ERRHAND_HAS_CUSTFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_ACCTFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_TXNFILE BIT VALUE('0'B);
+   %DECLARE ERRHAND_HAS_REPORT BIT VALUE('0'B);
    %INCLUDE ERRHAND;
 
    /* CONTROLLED storage - stack-based account context */
-   DECLARE ACCOUNT_CONTEXT CONTROLLED;
    DECLARE
-     1 ACCOUNT_CONTEXT,
+     1 ACCOUNT_CONTEXT CONTROLLED,
        2 CONTEXT_LEVEL       FIXED BIN(31),
        2 PARENT_CONTEXT      POINTER,
        2 ACCOUNT_DATA        LIKE ACCOUNT_MASTER,
@@ -64,8 +68,8 @@
    DECLARE MAX_CASH_TRANSACTION FIXED DEC(15,2) STATIC NONASSIGNABLE
      INIT(10000.00);   /* BSA/AML reporting threshold */
 
-   /* Security-critical calculation - IRREDUCIBLE prevents optimization */
-   DECLARE HASH_ITERATION_COUNT FIXED BIN(31) IRREDUCIBLE;
+   /* Security-critical calculation - value must not be cached */
+   DECLARE HASH_ITERATION_COUNT FIXED BIN(31);  /* IRREDUCIBLE valid only on ENTRY */
 
    /* Transaction sequence numbers - UNSIGNED (always positive) */
    DECLARE TXN_SEQUENCE UNSIGNED FIXED BIN(31);
@@ -107,8 +111,8 @@
      TXN_COUNT_IN_AREA = 0;
 
      /* Report storage usage - demonstrates storage built-ins */
-     STORAGE_USED = CURRENTSTORAGE();
-     STORAGE_AVAILABLE = STORAGE();
+     STORAGE_USED = CURRENTSTORAGE(TXN_BUFFER_AREA);
+     STORAGE_AVAILABLE = STORAGE(TXN_BUFFER_AREA);
 
      PUT SKIP LIST('BNKACCT Module Initialized');
      PUT SKIP LIST('  Storage used: ' || TRIM(STORAGE_USED) || ' bytes');
@@ -286,7 +290,7 @@
      END;
 
      /* Calculate total interest using SUM array built-in */
-     TOTAL_INTEREST = SUM(AMORT_SCHEDULE(*).INTEREST_PART, 1, I-1);
+     TOTAL_INTEREST = SUM(AMORT_SCHEDULE.INTEREST_PART);
 
      PUT SKIP LIST('Amortization Schedule Generated:');
      PUT SKIP LIST('  Total Payments: ' || TRIM(I-1));
@@ -385,7 +389,7 @@
      BATCH_TOTAL = 0.00;
 
      /* Allocate transactions in area - DO WHILE demo */
-     DO WHILE (BATCH_COUNT < 10 & ALLOCATION(TXN_BUFFER_AREA) < 60000);
+     DO WHILE (BATCH_COUNT < 10 & CURRENTSTORAGE(TXN_BUFFER_AREA) < 60000);
        
        /* Allocate in area */
        ALLOCATE TXN_NODE IN(TXN_BUFFER_AREA) SET(TXN_BUFFER_PTR);
@@ -415,7 +419,7 @@
      PUT SKIP LIST('  Count: ' || TRIM(BATCH_COUNT));
      PUT SKIP LIST('  Total: $' || TRIM(BATCH_TOTAL));
      PUT SKIP LIST('  Area used: ' || 
-                   TRIM(ALLOCATION(TXN_BUFFER_AREA)) || ' bytes');
+                   TRIM(CURRENTSTORAGE(TXN_BUFFER_AREA)) || ' bytes');
 
      /* Traverse chain using OFFSET */
      CALL TRAVERSE_TRANSACTION_CHAIN(FIRST_TXN_OFFSET);

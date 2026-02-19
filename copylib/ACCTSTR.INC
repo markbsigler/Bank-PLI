@@ -16,7 +16,7 @@
      2 CUSTOMER_ID           CUST_NUM_T,
      2 SORT_CODE             SORT_CODE_T,
      2 ACCOUNT_TYPE          ACCT_TYPE_T ORDINAL,
-     2 ACCOUNT_STATUS        BIT(8),
+     2 ACCOUNT_STATUS,
        3 ACTIVE              BIT(1),
        3 FROZEN              BIT(1),
        3 DORMANT             BIT(1),

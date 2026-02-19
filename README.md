@@ -18,62 +18,55 @@ This application showcases nearly all constructs, features, and capabilities of 
 
 ```mermaid
 graph TB
+    subgraph Includes
+        CUSTSTR[CUSTSTR.INC<br/>Customer Structure]
+        ACCTSTR[ACCTSTR.INC<br/>Account Structure]
+        TXNSTR[TXNSTR.INC<br/>Transaction Structure]
+        ERRHAND[ERRHAND.INC<br/>Error Handlers]
+        SQLCA[SQLCA.INC<br/>SQL Definitions]
+        CICSDEF[CICSDEF.INC<br/>CICS Definitions]
+        PICFMT[PICFMT.INC<br/>PICTURE Formats]
+    end
+
     BNKPKG[BNKPKG.PLI<br/>Root Package]
-    
-    CUSTSTR[CUSTSTR.INC<br/>Customer Structure]
-    ACCTSTR[ACCTSTR.INC<br/>Account Structure]
-    TXNSTR[TXNSTR.INC<br/>Transaction Structure]
-    ERRHAND[ERRHAND.INC<br/>Error Handlers]
-    SQLCA[SQLCA.INC<br/>SQL Definitions]
-    CICSDEF[CICSDEF.INC<br/>CICS Definitions]
-    
-    BNKMAIN[BNKMAIN.PLI<br/>Main Dispatcher]
-    BNKCUST[BNKCUST.PLI<br/>Customer Mgmt]
-    BNKACCT[BNKACCT.PLI<br/>Account Mgmt]
-    BNKXFER[BNKXFER.PLI<br/>Fund Transfer]
-    BNKBATCH[BNKBATCH.PLI<br/>Batch Generator]
-    BNKCREDT[BNKCREDT.PLI<br/>Credit Scoring]
-    BNKAUDIT[BNKAUDIT.PLI<br/>Audit Logger]
-    
-    BNKPKG --> BNKMAIN
-    BNKPKG --> BNKCUST
-    BNKPKG --> BNKACCT
-    BNKPKG --> BNKXFER
-    BNKPKG --> BNKBATCH
-    BNKPKG --> BNKCREDT
-    BNKPKG --> BNKAUDIT
-    
-    CUSTSTR --> BNKCUST
-    CUSTSTR --> BNKACCT
-    CUSTSTR --> BNKCREDT
-    CUSTSTR --> BNKMAIN
-    
-    ACCTSTR --> BNKACCT
-    ACCTSTR --> BNKXFER
-    ACCTSTR --> BNKMAIN
-    
-    TXNSTR --> BNKACCT
-    TXNSTR --> BNKXFER
-    TXNSTR --> BNKBATCH
-    TXNSTR --> BNKAUDIT
-    
-    SQLCA --> BNKCUST
-    SQLCA --> BNKACCT
-    SQLCA --> BNKXFER
-    SQLCA --> BNKMAIN
-    
-    CICSDEF --> BNKCUST
-    CICSDEF --> BNKACCT
-    CICSDEF --> BNKXFER
-    CICSDEF --> BNKMAIN
-    
-    ERRHAND --> BNKCUST
-    ERRHAND --> BNKACCT
-    ERRHAND --> BNKXFER
-    ERRHAND --> BNKBATCH
-    ERRHAND --> BNKCREDT
-    ERRHAND --> BNKAUDIT
-    ERRHAND --> BNKMAIN
+
+    subgraph "CICS Online Programs"
+        BNKMAIN[BNKMAIN.PLI<br/>Main Dispatcher]
+        BNKCUST[BNKCUST.PLI<br/>Customer Mgmt]
+        BNKACCT[BNKACCT.PLI<br/>Account Mgmt]
+        BNKXFER[BNKXFER.PLI<br/>Fund Transfer]
+        BNKCREDT[BNKCREDT.PLI<br/>Credit Scoring]
+    end
+
+    subgraph "Batch Programs"
+        BNKBATCH[BNKBATCH.PLI<br/>Batch Generator]
+        BNKAUDIT[BNKAUDIT.PLI<br/>Audit Logger]
+        BNKARCH[BNKARCH.PLI<br/>Archive/Compliance]
+        BNKFX[BNKFX.PLI<br/>Foreign Exchange]
+    end
+
+    BNKPKG --> BNKMAIN & BNKCUST & BNKACCT & BNKXFER
+    BNKPKG --> BNKBATCH & BNKCREDT & BNKAUDIT
+    BNKPKG --> BNKARCH & BNKFX
+
+    CUSTSTR --> BNKMAIN & BNKCUST & BNKACCT & BNKXFER
+    CUSTSTR --> BNKBATCH & BNKCREDT & BNKAUDIT
+
+    ACCTSTR --> BNKMAIN & BNKACCT & BNKXFER
+    ACCTSTR --> BNKBATCH & BNKCREDT & BNKAUDIT
+
+    TXNSTR --> BNKMAIN & BNKACCT & BNKXFER
+    TXNSTR --> BNKBATCH & BNKAUDIT & BNKARCH & BNKFX
+
+    SQLCA --> BNKMAIN & BNKCUST & BNKACCT & BNKXFER
+    SQLCA --> BNKBATCH & BNKCREDT
+
+    CICSDEF --> BNKMAIN & BNKCUST & BNKACCT & BNKXFER & BNKCREDT
+
+    ERRHAND --> BNKMAIN & BNKCUST & BNKACCT & BNKXFER
+    ERRHAND --> BNKBATCH & BNKCREDT & BNKARCH & BNKFX
+
+    PICFMT --> BNKFX
 ```
 
 ## File Structure
@@ -145,7 +138,6 @@ Bank-PLI/
 | `INITIAL` | BNKCREDT.PLI | Initial value specification |
 | `INITIAL CALL` | BNKCREDT.PLI | One-time initialization |
 | `NONASSIGNABLE` | BNKACCT.PLI | Read-only constants (regulatory limits) |
-| `IRREDUCIBLE` | BNKACCT.PLI | Prevent compiler optimization (security) |
 
 ### Storage Management
 
@@ -156,7 +148,7 @@ Bank-PLI/
 | `ALLOCATE IN(area)` | BNKACCT.PLI | Area-based allocation |
 | `CURRENTSTORAGE` | BNKACCT.PLI | Current storage usage |
 | `STORAGE` | BNKACCT.PLI | Storage allocation built-in |
-| `ALLOCATION` | BNKACCT.PLI | Storage query |
+| `ALLOCATION` | BNKACCT.PLI | Check CONTROLLED allocation depth |
 
 ### Structured Attributes
 
@@ -179,7 +171,7 @@ Bank-PLI/
 | `DO REPEAT` | BNKACCT.PLI | Fixed iteration loop |
 | `DO I = m TO n BY k` | Throughout | Counted loop with step |
 | `LEAVE` | BNKACCT.PLI | Early loop exit |
-| `ITERATE` | BNKACCT.PLI | Skip to next iteration |
+| `ITERATE` | *(commented)* | Skip to next iteration (documented pattern) |
 | `GOTO` | BNKXFER.PLI | Unconditional jump to labels |
 | `LABEL` variables | BNKXFER.PLI | Computed GOTO with dispatch table |
 | `BEGIN` blocks | BNKXFER.PLI | Scoped statement groups |
@@ -278,7 +270,7 @@ Bank-PLI/
 | `REGIONAL(3)` / `DIRECT` | BNKARCH.PLI | Hash-organized direct access |
 | `TRANSIENT` | BNKARCH.PLI | Temporary unnamed files |
 | `READ/WRITE` | BNKBATCH.PLI | Record-level I/O |
-| `REWRITE/DELETE` | BNKBATCH.PLI | Update operations |
+| `DELETE` | BNKCUST.PLI | SQL DELETE record operations |
 | `BACKWARDS` | BNKARCH.PLI | Reverse sequential reading |
 | `IGNORE` | BNKARCH.PLI | Skip corrupted records |
 
@@ -324,7 +316,7 @@ Bank-PLI/
 | `COMPLETION` | BNKCREDT.PLI | Query task completion status |
 | `DETACH` | BNKCREDT.PLI | Detach from task |
 | `PRIORITY` | BNKCREDT.PLI | Task scheduling priority |
-| `ATTACHED` | BNKCREDT.PLI | Query task attachment status |
+| `COMPLETION` query | BNKCREDT.PLI | Check task completion status |
 
 ### Dynamic Loading
 
@@ -462,8 +454,8 @@ Five account types with type-specific data:
 5. **LOAN** - Payment schedule
 
 ### Transactions
-Seven transaction types:
-- DEPOSIT, WITHDRAWAL, TRANSFER, PAYMENT, FEE, INTEREST, ADJUSTMENT
+Seven transaction types (DEFINE ORDINAL TXN_TYPE_T):
+- DEBIT, CREDIT, TRANSFER, FEE, INTEREST, DIVIDEND, PENALTY
 
 ### Fund Transfers
 - Single-phase and multi-phase routing
@@ -482,16 +474,18 @@ For teaching purposes, recommended study order:
 5. **BNKACCT.PLI** - Storage management, arrays, mathematics
 6. **BNKBATCH.PLI** - File I/O, data generation, batch processing
 7. **BNKAUDIT.PLI** - Stream I/O and formatting
-8. **BNKXFER.PLI** - Complex control flow, recursion, transactions
-9. **BNKCREDT.PLI** - Multitasking, dynamic loading, complex arithmetic
-10. **BNKMAIN.PLI** - System integration and dispatch
+9. **BNKARCH.PLI** - Archive I/O (DIRECT, TRANSIENT, BACKWARDS, IGNORE)
+10. **BNKFX.PLI** - International (WIDECHAR, GRAPHIC, BOOL, PICTURE drift)
+11. **BNKXFER.PLI** - Complex control flow, recursion, transactions
+12. **BNKCREDT.PLI** - Multitasking, dynamic loading, complex arithmetic
+13. **BNKMAIN.PLI** - System integration and dispatch
 
 ## Coverage Assessment
 
 This application demonstrates approximately **99%+** of Enterprise PL/I language constructs, including all major feature categories:
 
 ✅ Data types and structures (including WIDECHAR, GRAPHIC, UNSIGNED)  
-✅ Storage classes and management (including NONASSIGNABLE, IRREDUCIBLE)  
+✅ Storage classes and management (including NONASSIGNABLE)  
 ✅ Control flow (all forms including IF OTHERWISE)  
 ✅ Procedures and entry points (including COBOL interop)  
 ✅ Built-in functions (string, math, array, date/time, bit operations)  
@@ -536,7 +530,7 @@ The following constructs are excluded with justification:
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | **Data Types** | 100% | All types including WIDECHAR, GRAPHIC, UNSIGNED |
-| **Storage Classes** | 100% | Including NONASSIGNABLE, IRREDUCIBLE |
+| **Storage Classes** | 99% | IRREDUCIBLE excluded (valid only on ENTRY in V6) |
 | **Control Flow** | 100% | All forms including IF OTHERWISE |
 | **I/O Operations** | 99% | Missing only obsolete CTLASA |
 | **Built-in Functions** | 99% | Core functions complete, excluding obsolete |
@@ -561,5 +555,5 @@ Example code for educational purposes.
 ---
 
 **Author:** AI-generated comprehensive PL/I demonstration  
-**Date:** 2024  
+**Date:** 2025  
 **Version:** 1.0

@@ -60,7 +60,7 @@
      2 NOTES                 CHAR(255) VARYING,
      2 CHANNEL_INFO,
        3 CHANNEL_TYPE        CHAR(20) VARYING,  /* ATM/Online/Branch/Phone */
-       3 TERMINAL_ID         CHAR(8),
+       3 CHANNEL_TERMINAL_ID CHAR(8),            /* Renamed to avoid conflict with CARD_INFO.TERMINAL_ID */
        3 USER_ID             CHAR(8),
        3 IP_ADDRESS          CHAR(45),          /* IPv6 */
        3 SESSION_ID          CHAR(32),

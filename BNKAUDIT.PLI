@@ -49,8 +49,7 @@
    DECLARE FORMAT_BUF            CHAR(256);
    DECLARE INPUT_BUF             CHAR(256);
 
-   /* Format label for remote formatting */
-   DECLARE ACCT_LINE_FMT         FORMAT;
+   /* Format label for remote formatting - use R(label) in PUT EDIT */
 
    /* Sample transaction for demonstration */
    DECLARE SAMPLE_TXN            LIKE TRANSACTION_LOG;
@@ -90,17 +89,18 @@
    OPEN_AUDIT_FILES: PROCEDURE;
      DECLARE F FILE VARIABLE;  /* FILE variable for passing */
 
-     /* Open main audit log */
-     OPEN FILE(AUDIT_LOG) PAGESIZE(60) LINESIZE(132);
+     /* Open main audit log - TITLE maps to JCL DD name */
+     OPEN FILE(AUDIT_LOG) TITLE('AUDITLOG')
+          PAGESIZE(60) LINESIZE(132);
      
      PUT SKIP FILE(AUDIT_LOG) LIST('Audit log opened at ' || 
                                    REPORT_TIME);
 
-     /* Open detail report with dynamic title */
-     OPEN FILE(DETAIL_REPORT) TITLE('DETAIL.' || REPORT_DATE);
+     /* Open detail report - TITLE maps to JCL DD name */
+     OPEN FILE(DETAIL_REPORT) TITLE('DETAILRP');
 
-     /* Open summary report */
-     OPEN FILE(SUMMARY_REPORT);
+     /* Open summary report - TITLE maps to JCL DD name */
+     OPEN FILE(SUMMARY_REPORT) TITLE('SUMMARYR');
 
      /* Demonstrate FILE variable usage */
      F = AUDIT_LOG;
@@ -192,13 +192,12 @@
         SKIP, COLUMN(5), A, X(2), F(12,2),
         SKIP, COLUMN(5), A, X(2), E(15,8));
 
-     /* Remote format using R */
-     ACCT_LINE_FMT = FORMAT(SKIP, COLUMN(5), A(8), X(5), 
-                            A(30), X(5), F(15,2));
-     
      PUT FILE(DETAIL_REPORT) EDIT
        ('A0001234', 'John Doe', 1234.56)
        (R(ACCT_LINE_FMT));
+
+     ACCT_LINE_FMT: FORMAT(SKIP, COLUMN(5), A(8), X(5), 
+                            A(30), X(5), F(15,2));
 
    END DEMONSTRATE_FORMAT_ITEMS;
 
@@ -236,7 +235,7 @@
          ; /* Already handled */
        ELSE IF SAMPLE_TXN.TXN_TYPE = TXN_CREDIT THEN
          ; /* Already handled */
-       ELSE OTHERWISE DO;
+       ELSE DO;
          PUT SKIP LIST('  Unknown transaction type encountered');
        END;
      END;

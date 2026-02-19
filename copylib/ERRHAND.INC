@@ -13,6 +13,12 @@
  %DECLARE LOG_ERROR ENTRY;
  %ACTIVATE LOG_ERROR;
 
+ /* Preprocessor guards: including modules MUST declare        */
+ /* ERRHAND_HAS_CUSTFILE, ERRHAND_HAS_ACCTFILE,                 */
+ /* ERRHAND_HAS_TXNFILE, ERRHAND_HAS_REPORT as preprocessor     */
+ /* BIT variables BEFORE %INCLUDE ERRHAND.  Set to '1'B to     */
+ /* enable ON-condition handlers for that file.                 */
+
  %LOG_ERROR: PROCEDURE(ERROR_TYPE, ERROR_MSG);
    PUT SKIP LIST('ERROR [' || ERROR_TYPE || ']: ' || ERROR_MSG);
    PUT SKIP LIST('  ONCODE: ' || TRIM(ONCODE()));
@@ -100,6 +106,9 @@
  END;
 
  /* File I/O Errors - ONFILE/ONKEY available */
+ /* Guarded by preprocessor: only include file-specific handlers  */
+ /* if the including module has declared the file.               */
+ %IF ERRHAND_HAS_CUSTFILE %THEN %DO;
  ON KEY(CUSTFILE) BEGIN;
    DECLARE KEY_VALUE CHAR(50) VARYING;
    DECLARE FILE_NAME CHAR(20) VARYING;
@@ -121,7 +130,9 @@
        SIGNAL ERROR;
    END;
  END;
+ %END;
 
+ %IF ERRHAND_HAS_ACCTFILE %THEN %DO;
  ON KEY(ACCTFILE) BEGIN;
    DECLARE KEY_VALUE CHAR(50) VARYING;
    KEY_VALUE = ONKEY();
@@ -135,6 +146,7 @@
    ELSE
      SIGNAL ERROR;
  END;
+ %END;
 
  ON RECORD BEGIN;
    DECLARE FILE_NAME CHAR(20) VARYING;
@@ -147,29 +159,37 @@
    SIGNAL ERROR;
  END;
 
+ %IF ERRHAND_HAS_CUSTFILE %THEN %DO;
  ON ENDFILE(CUSTFILE) BEGIN;
    PUT SKIP LIST('End of CUSTFILE reached');
    EOF_CUST = '1'B;
  END;
+ %END;
 
+ %IF ERRHAND_HAS_ACCTFILE %THEN %DO;
  ON ENDFILE(ACCTFILE) BEGIN;
    PUT SKIP LIST('End of ACCTFILE reached');
    EOF_ACCT = '1'B;
  END;
+ %END;
 
+ %IF ERRHAND_HAS_TXNFILE %THEN %DO;
  ON ENDFILE(TXNFILE) BEGIN;
    EOF_TXN = '1'B;
  END;
+ %END;
 
+ %IF ERRHAND_HAS_REPORT %THEN %DO;
  ON ENDPAGE(REPORT) BEGIN;
-   PAGE_NUM = PAGE_NUM + 1;
+   ERRHAND_PAGE_NUM = ERRHAND_PAGE_NUM + 1;
    PUT FILE(REPORT) PAGE;
    PUT FILE(REPORT) SKIP(2) EDIT
      ('Banking System Report',
-      COLUMN(50), 'Page: ', PAGE_NUM)
+      COLUMN(50), 'Page: ', ERRHAND_PAGE_NUM)
      (A, A, F(5));
    PUT FILE(REPORT) SKIP(2);
  END;
+ %END;
 
  /* Storage Management Errors */
  ON STORAGE BEGIN;
@@ -195,7 +215,7 @@
      /* Generate SNAP dump */
      PUT SKIP LIST('*** SNAP DUMP REQUESTED ***');
    %END;
-   CALL CLEANUP_AND_EXIT(ONCODE());
+   CALL ERRHAND_CLEANUP(ONCODE());
  END;
 
  /* Attention/Halt */
@@ -203,7 +223,7 @@
    PUT SKIP LIST('ATTENTION:');
    PUT SKIP LIST('  User interrupt detected');
    PUT SKIP LIST('  Initiating graceful shutdown...');
-   CALL CLEANUP_AND_EXIT(999);
+   CALL ERRHAND_CLEANUP(999);
  END;
 
  /*-----------------------------------------------------------------*/
@@ -253,7 +273,7 @@
    PUT SKIP LIST('  User: ' || USERID);
    PUT SKIP LIST('  Terminal: ' || TERMID);
    PUT SKIP LIST('  Timestamp: ' || TIMESTAMP);
-   CALL LOG_SECURITY_EVENT();
+   CALL ERRHAND_LOG_SECURITY();
    RETURN_CODE = RC_SECURITY_FAIL;
    GOTO EMERGENCY_EXIT;
  END;
@@ -266,14 +286,14 @@
    PUT SKIP LIST('Rolling back transaction...');
    EXEC SQL ROLLBACK WORK;
    PUT SKIP LIST('Notifying operations...');
-   CALL SEND_ALERT('ERROR', ONCODE());
+   PUT SKIP LIST('  Alert: ERROR ONCODE=' || TRIM(ONCODE()));
  %END STANDARD_ERROR_RESPONSE;
 
  /* Variables referenced by handlers */
  DECLARE EOF_CUST BIT(1) INIT('0'B);
  DECLARE EOF_ACCT BIT(1) INIT('0'B);
  DECLARE EOF_TXN BIT(1) INIT('0'B);
- DECLARE PAGE_NUM FIXED BIN(31) INIT(0);
+ DECLARE ERRHAND_PAGE_NUM FIXED BIN(31) INIT(0);
  DECLARE RETURN_CODE FIXED BIN(31);
  DECLARE CURRENT_ACCT_NUM ACCT_NUM_T;
  DECLARE CURRENT_CUST_ID CUST_NUM_T;
@@ -283,3 +303,17 @@
  DECLARE ACCT_OVERDRAFT_LIMIT CURRENCY_T;
  DECLARE CREDIT_SCORE FIXED DEC(3);
  DECLARE MIN_CREDIT_SCORE FIXED DEC(3) INIT(600);
+
+ /*-----------------------------------------------------------------*/
+ /* Stub procedures referenced by ON-condition handlers             */
+ /* Override in calling module for production behaviour.             */
+ /*-----------------------------------------------------------------*/
+ ERRHAND_CLEANUP: PROCEDURE(CODE);
+   DECLARE CODE FIXED BIN(31);
+   PUT SKIP LIST('ERRHAND_CLEANUP: shutting down, code='
+                 || TRIM(CODE));
+ END ERRHAND_CLEANUP;
+
+ ERRHAND_LOG_SECURITY: PROCEDURE;
+   PUT SKIP LIST('ERRHAND_LOG_SECURITY: security event logged');
+ END ERRHAND_LOG_SECURITY;

@@ -15,7 +15,7 @@
  DECLARE
    1 CUSTOMER_MASTER,
      2 CUSTOMER_ID           CUST_NUM_T,
-     2 CUSTOMER_STATUS       BIT(8),
+     2 CUSTOMER_STATUS,
        3 ACTIVE              BIT(1),
        3 PREMIUM_CUSTOMER    BIT(1),
        3 FLAGGED_FOR_REVIEW  BIT(1),
@@ -32,9 +32,9 @@
        3 FULL_NAME           CHAR(100) VARYING,   /* Computed/stored */
      2 CONTACT_INFO,
        3 EMAIL               CHAR(80) VARYING,
-       3 PHONE_PRIMARY       PICTURE '(999)999-9999',
-       3 PHONE_SECONDARY     PICTURE '(999)999-9999',
-       3 PHONE_MOBILE        PICTURE '(999)999-9999',
+       3 PHONE_PRIMARY       CHAR(14),            /* Formatted at display time */
+       3 PHONE_SECONDARY     CHAR(14),
+       3 PHONE_MOBILE        CHAR(14),
        3 PREFERRED_CONTACT   CHAR(1),             /* E/P/M */
      2 ADDRESS_INFO,
        3 ADDRESS_LINES(3)    CHAR(60) VARYING,    /* DIMENSION demo */

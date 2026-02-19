@@ -163,12 +163,13 @@
  /*-----------------------------------------------------------------*/
 
  /* Full featured statement line format */
- DECLARE COMPLEX_STATEMENT      PIC '$$$,$$$,$$9.99CRDB'; /* Both CR/DB */
+ DECLARE COMPLEX_STATEMENT      PIC '$$$,$$$,$$9.99CR';  /* CR or DB but not both */
 
- /* International currency with symbol */
- DECLARE EURO_AMOUNT            PIC '€ZZZ,ZZ9.99';     /* Euro symbol */
- DECLARE POUND_AMOUNT           PIC '£ZZZ,ZZ9.99';     /* Pound symbol */
- DECLARE YEN_AMOUNT             PIC '¥ZZZ,ZZ9';        /* Yen (no decimals) */
+ /* International currency - PL/I PICTURE supports only $ as drift.
+    Use CHAR concatenation at runtime to prefix €, £, ¥ symbols. */
+ DECLARE EURO_AMOUNT            PIC '$ZZZ,ZZ9.99';     /* Replace $ with € at display */
+ DECLARE POUND_AMOUNT           PIC '$ZZZ,ZZ9.99';     /* Replace $ with £ at display */
+ DECLARE YEN_AMOUNT             PIC '$ZZZ,ZZ9';         /* Replace $ with ¥ at display */
 
  /*-----------------------------------------------------------------*/
  /* Fixed vs. Varying Point                                        */
