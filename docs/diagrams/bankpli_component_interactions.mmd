@@ -1,0 +1,70 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '12px' } } }%%
+sequenceDiagram
+    autonumber
+    participant T as 3270 Terminal
+    participant BMS as BMS Maps
+    participant MAIN as BNKMAIN<br/>(Dispatcher)
+    participant CUST as BNKCUST<br/>(Customer)
+    participant ACCT as BNKACCT<br/>(Account)
+    participant XFER as BNKXFER<br/>(Transfer)
+    participant CREDT as BNKCREDT<br/>(Credit)
+    participant DB2 as DB2 Subsystem
+    participant VSAM as VSAM KSDS
+
+    Note over T,VSAM: ═══ CICS Online Transaction Flow ═══
+
+    T ->>+ BMS: User input
+    BMS ->>+ MAIN: RECEIVE MAP → COMMAREA
+    
+    Note over MAIN: Parse TXN_TYPE from COMMAREA<br/>Route via dispatch table
+
+    alt TXN_TYPE = 'CUST'
+        MAIN ->>+ CUST: EXEC CICS LINK (COMMAREA)
+        CUST ->>+ DB2: SELECT FROM CUSTOMER_TABLE
+        DB2 -->>- CUST: Result set
+        Note over CUST: Process CRUD operation
+        CUST ->> DB2: INSERT/UPDATE/DELETE
+        CUST -->>- MAIN: Return via COMMAREA
+    else TXN_TYPE = 'ACCT'
+        MAIN ->>+ ACCT: EXEC CICS LINK (COMMAREA)
+        ACCT ->>+ DB2: Prepared statements
+        DB2 -->>- ACCT: Result
+        ACCT -->>- MAIN: Return via COMMAREA
+    else TXN_TYPE = 'XFER'
+        MAIN ->>+ XFER: EXEC CICS LINK (COMMAREA)
+        Note over XFER: BEGIN 2-phase transfer
+        XFER ->> XFER: EXEC CICS ENQ (lock)
+        XFER ->>+ DB2: UPDATE ACCOUNT_TABLE SET BAL=BAL-amt
+        DB2 -->>- XFER: OK
+        XFER ->>+ DB2: UPDATE ACCOUNT_TABLE SET BAL=BAL+amt
+        DB2 -->>- XFER: OK
+        XFER ->> XFER: EXEC CICS SYNCPOINT
+        XFER ->> XFER: EXEC CICS DEQ (unlock)
+        XFER -->>- MAIN: Return via COMMAREA
+    else TXN_TYPE = 'MENU'
+        Note over MAIN: Internal menu<br/>(no LINK needed)
+    end
+
+    MAIN ->>- BMS: SEND MAP
+    BMS -->>- T: Display result
+
+    Note over T,VSAM: ═══ Credit Processing (Multitasking) ═══
+
+    rect rgb(255, 235, 235)
+        MAIN ->>+ CREDT: EXEC CICS LINK
+        CREDT ->>+ VSAM: READ VSAM KSDS
+        VSAM -->>- CREDT: Customer record
+        CREDT ->> CREDT: EXEC CICS START (attach subtask)
+        Note over CREDT: Subtask increments<br/>EXTERNAL credit_count
+        CREDT ->> CREDT: EVENT WAIT (completion)
+        CREDT -->>- MAIN: Return
+        Note over MAIN: Read EXTERNAL credit_count<br/>(cross-task shared)
+    end
+
+    Note over T,VSAM: ═══ EXTERNAL Variable Sharing ═══
+
+    rect rgb(235, 245, 255)
+        Note over CREDT,MAIN: BNKCREDT declares:<br/>DCL credit_count FIXED BIN(31) EXTERNAL
+        CREDT ->> CREDT: credit_count += 1
+        Note over MAIN: BNKMAIN reads same<br/>EXTERNAL credit_count variable
+    end

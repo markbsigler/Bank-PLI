@@ -1,0 +1,99 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '13px' } } }%%
+flowchart TB
+    classDef mainApp fill:#FF6B6B,stroke:#C0392B,color:#fff,stroke-width:2px
+    classDef cicsApp fill:#F7DC6F,stroke:#F39C12,color:#333,stroke-width:2px
+    classDef batchApp fill:#96CEB4,stroke:#27AE60,color:#333,stroke-width:2px
+    classDef foundation fill:#4ECDC4,stroke:#1ABC9C,color:#333,stroke-width:2px
+    classDef structure fill:#85C1E9,stroke:#2980B9,color:#333,stroke-width:1px
+    classDef sysdef fill:#BB8FCE,stroke:#8E44AD,color:#fff,stroke-width:1px
+    classDef crosscut fill:#E8E8E8,stroke:#7F8C8D,color:#333,stroke-width:1px
+
+    %% ═══════════════════════════════════════
+    %% Dependencies Grouped by Category
+    %% ═══════════════════════════════════════
+
+    subgraph CAT1 ["<b>Category 1: Data Structure Dependencies</b>"]
+        direction LR
+        subgraph DS_Programs ["Programs using Data Structures"]
+            DS_MAIN["BNKMAIN"]
+            DS_CUST["BNKCUST"]
+            DS_ACCT["BNKACCT"]
+            DS_XFER["BNKXFER"]
+            DS_CREDT["BNKCREDT"]
+            DS_BATCH["BNKBATCH"]
+            DS_AUDIT["BNKAUDIT"]
+            DS_ARCH["BNKARCH"]
+            DS_FX["BNKFX"]
+        end
+        subgraph DS_Includes ["Data Structures"]
+            CUSTSTR["<b>CUSTSTR</b><br/>7 dependents"]
+            ACCTSTR["<b>ACCTSTR</b><br/>6 dependents"]
+            TXNSTR["<b>TXNSTR</b><br/>7 dependents"]
+        end
+        DS_MAIN & DS_CUST & DS_ACCT & DS_XFER & DS_CREDT & DS_BATCH & DS_AUDIT --> CUSTSTR
+        DS_MAIN & DS_ACCT & DS_XFER & DS_CREDT & DS_BATCH & DS_AUDIT --> ACCTSTR
+        DS_MAIN & DS_ACCT & DS_XFER & DS_BATCH & DS_AUDIT & DS_ARCH & DS_FX --> TXNSTR
+    end
+
+    subgraph CAT2 ["<b>Category 2: System / Middleware Dependencies</b>"]
+        direction LR
+        subgraph SYS_Programs ["Programs using System Defs"]
+            SY_MAIN["BNKMAIN"]
+            SY_CUST["BNKCUST"]
+            SY_ACCT["BNKACCT"]
+            SY_XFER["BNKXFER"]
+            SY_CREDT["BNKCREDT"]
+            SY_BATCH["BNKBATCH"]
+        end
+        subgraph SYS_Includes ["System Definitions"]
+            SQLCA["<b>SQLCA</b><br/>6 dependents<br/><i>DB2 programs</i>"]
+            CICSDEF["<b>CICSDEF</b><br/>5 dependents<br/><i>CICS programs</i>"]
+        end
+        SY_MAIN & SY_CUST & SY_ACCT & SY_XFER & SY_CREDT & SY_BATCH --> SQLCA
+        SY_MAIN & SY_CUST & SY_ACCT & SY_XFER & SY_CREDT --> CICSDEF
+    end
+
+    subgraph CAT3 ["<b>Category 3: Cross-Cutting Dependencies</b>"]
+        direction LR
+        subgraph CC_Programs ["Programs using Cross-Cutting"]
+            CC_MAIN["BNKMAIN"]
+            CC_CUST["BNKCUST"]
+            CC_ACCT["BNKACCT"]
+            CC_XFER["BNKXFER"]
+            CC_CREDT["BNKCREDT"]
+            CC_BATCH["BNKBATCH"]
+            CC_ARCH["BNKARCH"]
+            CC_FX["BNKFX"]
+        end
+        subgraph CC_Includes ["Cross-Cutting"]
+            ERRHAND["<b>ERRHAND</b><br/>8 dependents"]
+            PICFMT["<b>PICFMT</b><br/>1 dependent"]
+        end
+        CC_MAIN & CC_CUST & CC_ACCT & CC_XFER & CC_CREDT & CC_BATCH & CC_ARCH & CC_FX --> ERRHAND
+        CC_FX --> PICFMT
+    end
+
+    subgraph CAT4 ["<b>Category 4: Foundation Package</b>"]
+        direction LR
+        subgraph FND_Programs ["All Programs"]
+            FN_MAIN["BNKMAIN"]
+            FN_CUST["BNKCUST"]
+            FN_ACCT["BNKACCT"]
+            FN_XFER["BNKXFER"]
+            FN_CREDT["BNKCREDT"]
+            FN_BATCH["BNKBATCH"]
+            FN_AUDIT["BNKAUDIT"]
+            FN_ARCH["BNKARCH"]
+            FN_FX["BNKFX"]
+        end
+        BNKPKG["<b>BNKPKG</b><br/>Root Package<br/>9 dependents"]
+        FN_MAIN & FN_CUST & FN_ACCT & FN_XFER & FN_CREDT & FN_BATCH & FN_AUDIT & FN_ARCH & FN_FX --> BNKPKG
+    end
+
+    class DS_MAIN,SY_MAIN,CC_MAIN,FN_MAIN mainApp
+    class DS_CUST,DS_ACCT,DS_XFER,DS_CREDT,SY_CUST,SY_ACCT,SY_XFER,SY_CREDT,CC_CUST,CC_ACCT,CC_XFER,CC_CREDT,FN_CUST,FN_ACCT,FN_XFER,FN_CREDT cicsApp
+    class DS_BATCH,DS_AUDIT,DS_ARCH,DS_FX,SY_BATCH,CC_BATCH,CC_ARCH,CC_FX,FN_BATCH,FN_AUDIT,FN_ARCH,FN_FX batchApp
+    class BNKPKG foundation
+    class CUSTSTR,ACCTSTR,TXNSTR structure
+    class SQLCA,CICSDEF sysdef
+    class ERRHAND,PICFMT crosscut

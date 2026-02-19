@@ -1,0 +1,81 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '13px' } } }%%
+flowchart TD
+    classDef root fill:#FF6B6B,stroke:#C0392B,color:#fff,stroke-width:3px
+    classDef level1 fill:#F7DC6F,stroke:#F39C12,color:#333,stroke-width:2px
+    classDef level2 fill:#96CEB4,stroke:#27AE60,color:#333,stroke-width:2px
+    classDef level3 fill:#85C1E9,stroke:#2980B9,color:#333,stroke-width:1px
+    classDef leaf fill:#E8E8E8,stroke:#7F8C8D,color:#333,stroke-width:1px
+
+    %% ═══════════════════════════════════════
+    %% Hierarchical Dependency Tree
+    %% Root → Includes → Programs → Runtime
+    %% ═══════════════════════════════════════
+
+    ROOT["<b>Bank-PLI Application</b><br/><i>20 files | ~7,300 LOC</i>"]
+
+    ROOT --> FOUND["<b>Foundation Layer</b><br/><i>Root Package + Copylib</i>"]
+    ROOT --> EXEC["<b>Executable Layer</b><br/><i>9 Programs</i>"]
+    ROOT --> BUILD["<b>Build & Deploy</b><br/><i>JCL + Runtime</i>"]
+
+    %% Foundation tree
+    FOUND --> BNKPKG["BNKPKG.PLI<br/><i>Root Package</i><br/>→ 9 dependents"]
+    FOUND --> STRUCTS["Data Structures"]
+    FOUND --> SYSDEFS["System Definitions"]
+    FOUND --> CROSSCUT["Cross-Cutting"]
+
+    STRUCTS --> CUSTSTR["CUSTSTR.CPY<br/>→ 7 dependents"]
+    STRUCTS --> ACCTSTR["ACCTSTR.CPY<br/>→ 6 dependents"]
+    STRUCTS --> TXNSTR["TXNSTR.CPY<br/>→ 7 dependents"]
+
+    SYSDEFS --> SQLCA["SQLCA.CPY<br/>→ 6 dependents"]
+    SYSDEFS --> CICSDEF["CICSDEF.CPY<br/>→ 5 dependents"]
+
+    CROSSCUT --> ERRHAND["ERRHAND.CPY<br/>→ 8 dependents"]
+    CROSSCUT --> PICFMT["PICFMT.CPY<br/>→ 1 dependent"]
+
+    %% Executable tree
+    EXEC --> ONLINE["CICS Online<br/><i>5 programs</i>"]
+    EXEC --> BATCH["Batch<br/><i>4 programs</i>"]
+
+    ONLINE --> BNKMAIN["<b>BNKMAIN</b><br/>Dispatcher<br/><i>%INCLUDE: all 7</i>"]
+    ONLINE --> BNKCUST["<b>BNKCUST</b><br/>Customer<br/><i>%INCLUDE: 5</i>"]
+    ONLINE --> BNKACCT["<b>BNKACCT</b><br/>Account<br/><i>%INCLUDE: all 7</i>"]
+    ONLINE --> BNKXFER["<b>BNKXFER</b><br/>Transfer<br/><i>%INCLUDE: all 7</i>"]
+    ONLINE --> BNKCREDT["<b>BNKCREDT</b><br/>Credit<br/><i>%INCLUDE: 6</i>"]
+
+    BATCH --> BNKBATCH["<b>BNKBATCH</b><br/>Generator<br/><i>%INCLUDE: 6</i>"]
+    BATCH --> BNKAUDIT["<b>BNKAUDIT</b><br/>Audit<br/><i>%INCLUDE: 4</i>"]
+    BATCH --> BNKARCH["<b>BNKARCH</b><br/>Archive<br/><i>%INCLUDE: 3</i>"]
+    BATCH --> BNKFX["<b>BNKFX</b><br/>FX Rates<br/><i>%INCLUDE: 4</i>"]
+
+    %% Program → Runtime dependencies (leaves)
+    BNKMAIN --> M_RT["DB2 + CICS + LE"]
+    BNKCUST --> C_RT["DB2 + CICS + LE"]
+    BNKACCT --> A_RT["DB2 + CICS + LE"]
+    BNKXFER --> X_RT["DB2 + CICS + LE"]
+    BNKCREDT --> CR_RT["DB2 + CICS + LE + VSAM"]
+    BNKBATCH --> B_RT["DB2 + LE + VSAM + SEQ"]
+    BNKAUDIT --> AU_RT["LE + PRINT"]
+    BNKARCH --> AR_RT["LE + REGIONAL + TRANSIENT"]
+    BNKFX --> F_RT["LE + In-Memory"]
+
+    %% Build tree
+    BUILD --> COMPILEJCL["COMPILE.JCL<br/><i>32 steps</i>"]
+    BUILD --> RUNBATCHJCL["RUNBATCH.JCL<br/><i>4 steps</i>"]
+    BUILD --> TARGETS["Deployment Targets"]
+
+    COMPILEJCL --> CJ1["DB2 Precompile"]
+    COMPILEJCL --> CJ2["CICS Translate"]
+    COMPILEJCL --> CJ3["PL/I Compile"]
+    COMPILEJCL --> CJ4["Link-Edit"]
+    COMPILEJCL --> CJ5["DB2 BIND"]
+
+    TARGETS --> LOADLIB["BANK.LOADLIB<br/><i>Batch modules</i>"]
+    TARGETS --> CICSLOAD["BANK.CICSLOAD<br/><i>CICS modules</i>"]
+    TARGETS --> DB2PLAN["BANKPLAN<br/><i>DB2 plan</i>"]
+
+    class ROOT root
+    class FOUND,EXEC,BUILD level1
+    class BNKPKG,STRUCTS,SYSDEFS,CROSSCUT,ONLINE,BATCH,COMPILEJCL,RUNBATCHJCL,TARGETS level2
+    class CUSTSTR,ACCTSTR,TXNSTR,SQLCA,CICSDEF,ERRHAND,PICFMT,BNKMAIN,BNKCUST,BNKACCT,BNKXFER,BNKCREDT,BNKBATCH,BNKAUDIT,BNKARCH,BNKFX,CJ1,CJ2,CJ3,CJ4,CJ5 level3
+    class M_RT,C_RT,A_RT,X_RT,CR_RT,B_RT,AU_RT,AR_RT,F_RT,LOADLIB,CICSLOAD,DB2PLAN leaf

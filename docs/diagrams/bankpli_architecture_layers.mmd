@@ -1,0 +1,126 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '14px' } } }%%
+flowchart TD
+    classDef presentation fill:#96CEB4,stroke:#27AE60,color:#333,stroke-width:2px
+    classDef dispatch fill:#FF6B6B,stroke:#C0392B,color:#fff,stroke-width:2px
+    classDef business fill:#F7DC6F,stroke:#F39C12,color:#333,stroke-width:2px
+    classDef shared fill:#4ECDC4,stroke:#1ABC9C,color:#333,stroke-width:2px
+    classDef data_access fill:#45B7D1,stroke:#2980B9,color:#fff,stroke-width:2px
+    classDef infra fill:#BB8FCE,stroke:#8E44AD,color:#fff,stroke-width:2px
+    classDef persistence fill:#E8E8E8,stroke:#7F8C8D,color:#333,stroke-width:2px
+    classDef errorlayer fill:#F1948A,stroke:#E74C3C,color:#333,stroke-width:2px
+
+    %% ═══════════════════════════════════════════════════
+    %% Layer 1: Presentation / Entry
+    %% ═══════════════════════════════════════════════════
+    subgraph L1["<b>Layer 1 — Presentation / Entry</b>"]
+        direction LR
+        BMS["BMS Maps<br/>(CUSTMAP)"]
+        TERM_IO["3270 Terminal I/O<br/>EXEC CICS SEND/RECEIVE"]
+        PARM["PARM String<br/>Parsing"]
+        REPORT_IO["PRINT Files<br/>PUT EDIT / PUT LIST"]
+        COBOL_IF["COBOL Interface<br/>OPTIONS(COBOL)"]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %% Layer 2: Transaction Dispatch
+    %% ═══════════════════════════════════════════════════
+    subgraph L2["<b>Layer 2 — Transaction Dispatch</b>"]
+        direction LR
+        MAIN_DISP["BNKMAIN<br/>SELECT(EIBTRNID)<br/>Routing Table<br/>──────<br/>CUST│ACCT│XFER│MENU│BTCH"]
+        ENTRY_PTS["Multiple ENTRY Points<br/>──────<br/>BNKMAIN (CICS main)<br/>BATCH_INIT (DB2 connect)<br/>COBOL_ENTRY (interop)<br/>SYSTEM_DIAG (diagnostics)"]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %% Layer 3: Business Logic
+    %% ═══════════════════════════════════════════════════
+    subgraph L3["<b>Layer 3 — Business Logic</b>"]
+        direction LR
+        subgraph L3_online["CICS Online"]
+            CUST_BIZ["BNKCUST<br/>Customer CRUD<br/>Validation<br/>Cursor Search"]
+            ACCT_BIZ["BNKACCT<br/>Account Lifecycle<br/>Amortization<br/>Interest Calc"]
+            XFER_BIZ["BNKXFER<br/>Transfer Validation<br/>Recursive Routing<br/>Fee Calculation"]
+            CREDT_BIZ["BNKCREDT<br/>Credit Scoring<br/>Parallel Bureaus<br/>Rule Evaluation"]
+        end
+        subgraph L3_batch["Batch Processing"]
+            BATCH_BIZ["BNKBATCH<br/>Data Generation<br/>Commit Strategy"]
+            AUDIT_BIZ["BNKAUDIT<br/>Audit Analysis<br/>Report Generation"]
+            ARCH_BIZ["BNKARCH<br/>Archive Compliance<br/>Direct Access"]
+            FX_BIZ["BNKFX<br/>FX Processing<br/>SWIFT MT103"]
+        end
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %% Layer 4: Shared Type System / Package
+    %% ═══════════════════════════════════════════════════
+    subgraph L4["<b>Layer 4 — Shared Type System</b>"]
+        direction LR
+        PKG["BNKPKG<br/>──────<br/>DEFINE ALIAS (10 types)<br/>DEFINE ORDINAL (2 enums)<br/>DEFINE STRUCTURE (2 templates)<br/>GENERIC dispatch<br/>CONDITION declarations (6)<br/>System constants"]
+        STRUCTS["Copylib Structures<br/>──────<br/>CUSTSTR (Customer)<br/>ACCTSTR (Account+UNION)<br/>TXNSTR (Transaction)"]
+        DEFS["System Definitions<br/>──────<br/>SQLCA (DB2 comms)<br/>CICSDEF (CICS constants)<br/>PICFMT (PICTURE formats)"]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %% Layer 5: Cross-Cutting — Error Handling
+    %% ═══════════════════════════════════════════════════
+    subgraph L5["<b>Layer 5 — Cross-Cutting: Error Handling</b>"]
+        direction LR
+        ERRHAND_MOD["ERRHAND.INC<br/>──────<br/>ON CONVERSION │ SIZE │ FIXEDOVERFLOW<br/>ON ZERODIVIDE │ STRINGRANGE │ KEY<br/>ON RECORD │ ENDFILE │ STORAGE │ AREA<br/>ON ERROR │ ATTENTION<br/>──────<br/>Custom: INSUFFICIENT_FUNDS<br/>OVERDRAFT_LIMIT │ CREDIT_THRESHOLD<br/>SECURITY_VIOLATION<br/>──────<br/>%PROCEDURE LOG_ERROR macro<br/>Preprocessor guards: %IF ERRHAND_HAS_*"]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %% Layer 6: Data Access
+    %% ═══════════════════════════════════════════════════
+    subgraph L6["<b>Layer 6 — Data Access</b>"]
+        direction LR
+        SQL_ACCESS["Embedded SQL<br/>──────<br/>SELECT INTO / CURSOR<br/>INSERT / UPDATE<br/>COMMIT / ROLLBACK<br/>SAVEPOINT"]
+        FILE_ACCESS["File I/O<br/>──────<br/>VSAM KSDS (KEYED)<br/>SEQUENTIAL<br/>REGIONAL(1) / REGIONAL(3)<br/>STREAM PRINT"]
+        MEM_ACCESS["In-Memory Storage<br/>──────<br/>CONTROLLED stack<br/>AREA / BASED / OFFSET<br/>EXTERNAL cross-module"]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %% Layer 7: Infrastructure / Runtime
+    %% ═══════════════════════════════════════════════════
+    subgraph L7["<b>Layer 7 — Infrastructure / Runtime</b>"]
+        direction LR
+        DB2_RT["DB2 Subsystem<br/>BANKPLAN / BANKPKG"]
+        CICS_RT["CICS TS<br/>DFHELII"]
+        LE_RT["Language Environment<br/>CEE.SCEERUN"]
+        PLI_RT["PL/I Runtime<br/>SIBMZRUN"]
+        VSAM_RT["VSAM / QSAM<br/>z/OS Access Methods"]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %% Layer 8: Physical Persistence
+    %% ═══════════════════════════════════════════════════
+    subgraph L8["<b>Layer 8 — Physical Persistence</b>"]
+        direction LR
+        DB2_STORE[("DB2 Tables<br/>CUSTOMER_TABLE<br/>ACCOUNT_TABLE<br/>TRANSACTION_TABLE")]
+        VSAM_STORE[("VSAM Clusters<br/>CUSTOMER.MASTER<br/>ACCOUNT.MASTER")]
+        SEQ_STORE[("Sequential Files<br/>TRANSACTION.SEQ<br/>REGIONAL.DATA")]
+        RPT_STORE[("Report Datasets<br/>AUDIT.LOG<br/>DETAIL.REPORT<br/>SUMMARY.REPORT")]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %% Inter-Layer Dependencies (top → bottom)
+    %% ═══════════════════════════════════════════════════
+    L1 --> L2
+    L2 --> L3
+    L3 --> L4
+    L3 --> L6
+    L4 --> L6
+    L5 -.->|"Included by<br/>all modules"| L3
+    L5 -.-> L4
+    L6 --> L7
+    L7 --> L8
+
+    %% ═══════════════════════════════════════════════════
+    %% Styles
+    %% ═══════════════════════════════════════════════════
+    class BMS,TERM_IO,PARM,REPORT_IO,COBOL_IF presentation
+    class MAIN_DISP,ENTRY_PTS dispatch
+    class CUST_BIZ,ACCT_BIZ,XFER_BIZ,CREDT_BIZ,BATCH_BIZ,AUDIT_BIZ,ARCH_BIZ,FX_BIZ business
+    class PKG,STRUCTS,DEFS shared
+    class ERRHAND_MOD errorlayer
+    class SQL_ACCESS,FILE_ACCESS,MEM_ACCESS data_access
+    class DB2_RT,CICS_RT,LE_RT,PLI_RT,VSAM_RT infra
+    class DB2_STORE,VSAM_STORE,SEQ_STORE,RPT_STORE persistence

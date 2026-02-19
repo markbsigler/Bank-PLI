@@ -1,0 +1,74 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '13px' } } }%%
+flowchart TB
+    classDef batchApp fill:#96CEB4,stroke:#27AE60,color:#333,stroke-width:2px
+    classDef dataStore fill:#45B7D1,stroke:#2980B9,color:#fff,stroke-width:2px
+    classDef report fill:#E8E8E8,stroke:#7F8C8D,color:#333,stroke-width:2px
+    classDef jcl fill:#F7DC6F,stroke:#F39C12,color:#333,stroke-width:2px
+    classDef external fill:#BB8FCE,stroke:#8E44AD,color:#fff,stroke-width:2px
+
+    %% ═══════════════════════════════════════
+    %% Batch Processing Pipeline
+    %% RUNBATCH.JCL Execution Flow
+    %% ═══════════════════════════════════════
+
+    subgraph JCL ["<b>RUNBATCH.JCL — Job Flow</b>"]
+        direction TB
+        
+        subgraph Step1 ["<b>Step 1: BNKBATCH</b> — Test Data Generator"]
+            BATCH_PARM["PARM='GEN,1000'<br/><i>Generate 1000 records</i>"]
+            BATCH_PGM["<b>BNKBATCH</b>"]
+            subgraph BATCH_IO ["I/O Operations"]
+                direction LR
+                BATCH_DB2["SQL INSERT →<br/>TRANSACTION_TABLE"]
+                BATCH_VSAM["WRITE →<br/>VSAM KSDS"]
+                BATCH_SEQ["WRITE →<br/>Sequential<br/>RECSIZE 2048"]
+                BATCH_PRINT["PUT EDIT →<br/>SYSPRINT"]
+            end
+            BATCH_PARM --> BATCH_PGM --> BATCH_IO
+        end
+
+        subgraph Step2 ["<b>Step 2: BNKAUDIT</b> — Audit Report Generator"]
+            AUDIT_PARM["<i>No PARM</i>"]
+            AUDIT_PGM["<b>BNKAUDIT</b>"]
+            subgraph AUDIT_IO ["Report Output"]
+                direction LR
+                AUDIT_LOG["AUDITLOG<br/><i>Audit trail</i>"]
+                AUDIT_DET["DETAILRP<br/><i>Detailed report</i>"]
+                AUDIT_SUM["SUMMARYR<br/><i>Summary report</i>"]
+            end
+            AUDIT_PARM --> AUDIT_PGM --> AUDIT_IO
+        end
+
+        subgraph Step3 ["<b>Step 3: BNKCREDT</b> — Credit Processing"]
+            CREDT_PGM["<b>BNKCREDT</b><br/><i>Runs as batch step</i>"]
+            subgraph CREDT_IO ["I/O Operations"]
+                CREDT_VSAM["READ →<br/>VSAM KSDS"]
+                CREDT_EXT["EXTERNAL →<br/>credit_count"]
+            end
+            CREDT_PGM --> CREDT_IO
+        end
+
+        subgraph Step4 ["<b>Step 4: IDCAMS</b> — VSAM Verification"]
+            VERIFY["IDCAMS VERIFY<br/>BANK.VSAM.CUSTFILE"]
+        end
+    end
+
+    %% Flow between steps
+    Step1 -->|"COND=(0,NE)"| Step2
+    Step2 -->|"COND=(0,NE)"| Step3
+    Step3 -->|"Always"| Step4
+
+    %% External data stores
+    DB2[("DB2<br/>TRANSACTION_TABLE")]
+    VSAM[("VSAM KSDS<br/>BANK.VSAM.CUSTFILE")]
+    SEQ[("Sequential<br/>BANK.BATCH.SEQFILE")]
+
+    BATCH_DB2 --> DB2
+    BATCH_VSAM --> VSAM
+    BATCH_SEQ --> SEQ
+    CREDT_VSAM --> VSAM
+
+    class BATCH_PGM,AUDIT_PGM,CREDT_PGM,VERIFY batchApp
+    class DB2,VSAM,SEQ dataStore
+    class BATCH_PRINT,AUDIT_LOG,AUDIT_DET,AUDIT_SUM report
+    class BATCH_PARM,AUDIT_PARM jcl

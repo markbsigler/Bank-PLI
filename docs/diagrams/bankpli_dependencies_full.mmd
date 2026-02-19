@@ -1,0 +1,124 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '13px' } } }%%
+flowchart LR
+    classDef mainApp fill:#FF6B6B,stroke:#C0392B,color:#fff,stroke-width:2px
+    classDef cicsApp fill:#F7DC6F,stroke:#F39C12,color:#333,stroke-width:2px
+    classDef batchApp fill:#96CEB4,stroke:#27AE60,color:#333,stroke-width:2px
+    classDef foundation fill:#4ECDC4,stroke:#1ABC9C,color:#333,stroke-width:2px
+    classDef structure fill:#85C1E9,stroke:#2980B9,color:#333,stroke-width:1px
+    classDef sysdef fill:#BB8FCE,stroke:#8E44AD,color:#fff,stroke-width:1px
+    classDef crosscut fill:#E8E8E8,stroke:#7F8C8D,color:#333,stroke-width:1px
+
+    %% ═══════════════════════════════════════════════
+    %% Full %INCLUDE Dependency Matrix
+    %% All 9 programs → 7 copylib members
+    %% ═══════════════════════════════════════════════
+
+    subgraph Programs ["<b>Programs</b>"]
+        direction TB
+        subgraph CICS ["CICS Online"]
+            BNKMAIN["BNKMAIN<br/><i>Dispatcher</i>"]
+            BNKCUST["BNKCUST<br/><i>Customer</i>"]
+            BNKACCT["BNKACCT<br/><i>Account</i>"]
+            BNKXFER["BNKXFER<br/><i>Transfer</i>"]
+            BNKCREDT["BNKCREDT<br/><i>Credit</i>"]
+        end
+        subgraph Batch ["Batch"]
+            BNKBATCH["BNKBATCH<br/><i>Generator</i>"]
+            BNKAUDIT["BNKAUDIT<br/><i>Audit</i>"]
+            BNKARCH["BNKARCH<br/><i>Archive</i>"]
+            BNKFX["BNKFX<br/><i>FX Rates</i>"]
+        end
+    end
+
+    subgraph Includes ["<b>Copylib Members</b>"]
+        direction TB
+        subgraph Structures ["Data Structures"]
+            CUSTSTR["CUSTSTR.CPY"]
+            ACCTSTR["ACCTSTR.CPY"]
+            TXNSTR["TXNSTR.CPY"]
+        end
+        subgraph SystemDefs ["System Definitions"]
+            SQLCA["SQLCA.CPY"]
+            CICSDEF["CICSDEF.CPY"]
+        end
+        subgraph CrossCutting ["Cross-Cutting"]
+            ERRHAND["ERRHAND.CPY"]
+            PICFMT["PICFMT.CPY"]
+        end
+        BNKPKG["BNKPKG.PLI<br/><i>Root Package</i>"]
+    end
+
+    %% ─── BNKMAIN (all 7) ───
+    BNKMAIN --> BNKPKG
+    BNKMAIN --> CUSTSTR
+    BNKMAIN --> ACCTSTR
+    BNKMAIN --> TXNSTR
+    BNKMAIN --> SQLCA
+    BNKMAIN --> CICSDEF
+    BNKMAIN --> ERRHAND
+
+    %% ─── BNKCUST (5) ───
+    BNKCUST --> BNKPKG
+    BNKCUST --> CUSTSTR
+    BNKCUST --> SQLCA
+    BNKCUST --> CICSDEF
+    BNKCUST --> ERRHAND
+
+    %% ─── BNKACCT (all 7) ───
+    BNKACCT --> BNKPKG
+    BNKACCT --> CUSTSTR
+    BNKACCT --> ACCTSTR
+    BNKACCT --> TXNSTR
+    BNKACCT --> SQLCA
+    BNKACCT --> CICSDEF
+    BNKACCT --> ERRHAND
+
+    %% ─── BNKXFER (all 7) ───
+    BNKXFER --> BNKPKG
+    BNKXFER --> CUSTSTR
+    BNKXFER --> ACCTSTR
+    BNKXFER --> TXNSTR
+    BNKXFER --> SQLCA
+    BNKXFER --> CICSDEF
+    BNKXFER --> ERRHAND
+
+    %% ─── BNKCREDT (6, no TXNSTR) ───
+    BNKCREDT --> BNKPKG
+    BNKCREDT --> CUSTSTR
+    BNKCREDT --> ACCTSTR
+    BNKCREDT --> SQLCA
+    BNKCREDT --> CICSDEF
+    BNKCREDT --> ERRHAND
+
+    %% ─── BNKBATCH (6, no CICSDEF) ───
+    BNKBATCH --> BNKPKG
+    BNKBATCH --> CUSTSTR
+    BNKBATCH --> ACCTSTR
+    BNKBATCH --> TXNSTR
+    BNKBATCH --> SQLCA
+    BNKBATCH --> ERRHAND
+
+    %% ─── BNKAUDIT (4) ───
+    BNKAUDIT --> BNKPKG
+    BNKAUDIT --> TXNSTR
+    BNKAUDIT --> ACCTSTR
+    BNKAUDIT --> CUSTSTR
+
+    %% ─── BNKARCH (3) ───
+    BNKARCH --> BNKPKG
+    BNKARCH --> TXNSTR
+    BNKARCH --> ERRHAND
+
+    %% ─── BNKFX (4) ───
+    BNKFX --> BNKPKG
+    BNKFX --> TXNSTR
+    BNKFX --> PICFMT
+    BNKFX --> ERRHAND
+
+    class BNKMAIN mainApp
+    class BNKCUST,BNKACCT,BNKXFER,BNKCREDT cicsApp
+    class BNKBATCH,BNKAUDIT,BNKARCH,BNKFX batchApp
+    class BNKPKG foundation
+    class CUSTSTR,ACCTSTR,TXNSTR structure
+    class SQLCA,CICSDEF sysdef
+    class ERRHAND,PICFMT crosscut

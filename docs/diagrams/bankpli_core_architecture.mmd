@@ -1,0 +1,130 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '14px' } } }%%
+flowchart TD
+    classDef mainApp fill:#FF6B6B,stroke:#C0392B,color:#fff,stroke-width:2px
+    classDef cicsOnline fill:#F7DC6F,stroke:#F39C12,color:#333,stroke-width:2px
+    classDef batchProg fill:#96CEB4,stroke:#27AE60,color:#333,stroke-width:2px
+    classDef copylib fill:#4ECDC4,stroke:#1ABC9C,color:#333,stroke-width:2px
+    classDef dataStore fill:#45B7D1,stroke:#2980B9,color:#fff,stroke-width:2px
+    classDef external fill:#BB8FCE,stroke:#8E44AD,color:#fff,stroke-width:2px
+    classDef jclBuild fill:#E8E8E8,stroke:#7F8C8D,color:#333,stroke-width:2px
+    classDef runtime fill:#85C1E9,stroke:#2471A3,color:#333,stroke-width:2px
+
+    %% ═══════════════════════════════════════════════════
+    %% TOP: External Entry Points
+    %% ═══════════════════════════════════════════════════
+    subgraph entry["🖥️  Entry Points"]
+        direction LR
+        TERMINAL["3270 Terminal<br/>(CICS User)"]
+        JCLSUB["JCL Submission<br/>(Batch Scheduler)"]
+        COBOL_CALLER["COBOL Program<br/>(Cross-Language)"]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %% CICS Transaction Server
+    %% ═══════════════════════════════════════════════════
+    subgraph cics["🔷  CICS Transaction Server"]
+        direction TB
+        BNKMAIN["<b>BNKMAIN</b><br/>Main Dispatcher<br/>──────────<br/>CUST │ ACCT │ XFER<br/>MENU │ BTCH"]
+
+        subgraph online["Online Transaction Programs"]
+            direction LR
+            BNKCUST["<b>BNKCUST</b><br/>Customer Mgmt<br/>──────────<br/>CRUD + Cursor<br/>BMS Map I/O"]
+            BNKACCT["<b>BNKACCT</b><br/>Account Mgmt<br/>──────────<br/>CONTROLLED/AREA<br/>Amortization"]
+            BNKXFER["<b>BNKXFER</b><br/>Fund Transfer<br/>──────────<br/>2-Phase Commit<br/>Recursive Routing"]
+            BNKCREDT["<b>BNKCREDT</b><br/>Credit Scoring<br/>──────────<br/>TASK/EVENT<br/>Parallel Bureaus"]
+        end
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %% Batch Processing
+    %% ═══════════════════════════════════════════════════
+    subgraph batch["📦  Batch Processing"]
+        direction LR
+        BNKBATCH["<b>BNKBATCH</b><br/>Data Generator<br/>──────────<br/>VSAM + Sequential<br/>REGIONAL(1)"]
+        BNKAUDIT["<b>BNKAUDIT</b><br/>Audit Logger<br/>──────────<br/>3 PRINT Files<br/>FILE Variable"]
+        BNKARCH["<b>BNKARCH</b><br/>Archive/Compliance<br/>──────────<br/>REGIONAL(3)/DIRECT<br/>TRANSIENT/BACKWARDS"]
+        BNKFX["<b>BNKFX</b><br/>FX/International<br/>──────────<br/>WIDECHAR/GRAPHIC<br/>SWIFT MT103"]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %% Shared Package
+    %% ═══════════════════════════════════════════════════
+    subgraph foundation["🏗️  Foundation Package"]
+        BNKPKG["<b>BNKPKG</b><br/>Root Package<br/>──────────<br/>DEFINE ALIAS/ORDINAL/STRUCTURE<br/>GENERIC│CONDITION│FORMAT"]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %% Data Stores
+    %% ═══════════════════════════════════════════════════
+    subgraph datastores["💾  Persistent Data Stores"]
+        direction LR
+        DB2[("DB2 Subsystem<br/>──────────<br/>CUSTOMER_TABLE<br/>ACCOUNT_TABLE<br/>TRANSACTION_TABLE")]
+        VSAM[("VSAM KSDS<br/>──────────<br/>CUSTOMER.MASTER<br/>ACCOUNT.MASTER")]
+        SEQFILES[("Sequential &<br/>Regional Files<br/>──────────<br/>TRANSACTION.SEQ<br/>REGIONAL.DATA")]
+        REPORTS[("Report Output<br/>──────────<br/>AUDIT.LOG<br/>DETAIL.REPORT<br/>SUMMARY.REPORT")]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %% Build Infrastructure
+    %% ═══════════════════════════════════════════════════
+    subgraph build_infra["⚙️  Build Infrastructure"]
+        direction LR
+        COMPILE_JCL["COMPILE.JCL<br/>32-Step Build<br/>──────────<br/>DB2 Precompile →<br/>CICS Translate →<br/>PL/I Compile →<br/>Link-Edit → BIND"]
+        RUN_JCL["RUNBATCH.JCL<br/>Execution<br/>──────────<br/>GENERATE →<br/>AUDIT → SCORE →<br/>VERIFY"]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %% CONNECTIONS: Entry → Dispatcher
+    %% ═══════════════════════════════════════════════════
+    TERMINAL -->|"CUST/ACCT/XFER<br/>MENU/BTCH"| BNKMAIN
+    COBOL_CALLER -->|"COBOL_ENTRY<br/>OPTIONS(COBOL)"| BNKMAIN
+    JCLSUB -->|"BATCH_INIT<br/>Entry Point"| BNKMAIN
+    JCLSUB -->|"Direct Exec"| BNKBATCH
+    JCLSUB -->|"Direct Exec"| BNKAUDIT
+    JCLSUB -->|"Direct Exec"| BNKARCH
+    JCLSUB -->|"Direct Exec"| BNKFX
+
+    %% CONNECTIONS: Dispatcher → Online Programs
+    BNKMAIN -->|"EXEC CICS LINK"| BNKCUST
+    BNKMAIN -->|"EXEC CICS LINK"| BNKACCT
+    BNKMAIN -->|"EXEC CICS LINK"| BNKXFER
+    BNKMAIN -->|"EXEC CICS LINK"| BNKBATCH
+    BNKCREDT -.->|"EXTERNAL counters<br/>TOTAL_REQUESTS"| BNKMAIN
+
+    %% CONNECTIONS: Programs → Data Stores
+    BNKCUST -->|"SELECT/INSERT<br/>CURSOR"| DB2
+    BNKXFER -->|"UPDATE + SAVEPOINT<br/>2-Phase Commit"| DB2
+    BNKBATCH -->|"INSERT + COMMIT"| DB2
+    BNKBATCH -->|"WRITE KEYFROM"| VSAM
+    BNKBATCH -->|"WRITE"| SEQFILES
+    BNKCREDT -.->|"READ (Batch)"| VSAM
+    BNKAUDIT -->|"PUT EDIT/LIST"| REPORTS
+    BNKARCH -->|"DIRECT/BACKWARDS<br/>LOCATE"| SEQFILES
+
+    %% CONNECTIONS: Foundation
+    BNKPKG -.->|"%INCLUDE"| BNKMAIN
+    BNKPKG -.->|"%INCLUDE"| BNKCUST
+    BNKPKG -.->|"%INCLUDE"| BNKACCT
+    BNKPKG -.->|"%INCLUDE"| BNKXFER
+    BNKPKG -.->|"%INCLUDE"| BNKBATCH
+    BNKPKG -.->|"%INCLUDE"| BNKCREDT
+    BNKPKG -.->|"%INCLUDE"| BNKAUDIT
+    BNKPKG -.->|"%INCLUDE"| BNKARCH
+    BNKPKG -.->|"%INCLUDE"| BNKFX
+
+    %% Build
+    COMPILE_JCL -.->|"Builds All"| foundation
+    COMPILE_JCL -.->|"Builds All"| cics
+    COMPILE_JCL -.->|"Builds All"| batch
+    RUN_JCL -.->|"Executes"| batch
+
+    %% ═══════════════════════════════════════════════════
+    %% STYLES
+    %% ═══════════════════════════════════════════════════
+    class BNKMAIN mainApp
+    class BNKCUST,BNKACCT,BNKXFER,BNKCREDT cicsOnline
+    class BNKBATCH,BNKAUDIT,BNKARCH,BNKFX batchProg
+    class BNKPKG copylib
+    class DB2,VSAM,SEQFILES,REPORTS dataStore
+    class TERMINAL,COBOL_CALLER,JCLSUB external
+    class COMPILE_JCL,RUN_JCL jclBuild

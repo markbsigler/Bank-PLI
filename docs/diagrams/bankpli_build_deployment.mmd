@@ -1,0 +1,121 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '12px' } } }%%
+flowchart TB
+    classDef source fill:#96CEB4,stroke:#27AE60,color:#333,stroke-width:2px
+    classDef precomp fill:#BB8FCE,stroke:#8E44AD,color:#fff,stroke-width:2px
+    classDef compile fill:#F7DC6F,stroke:#F39C12,color:#333,stroke-width:2px
+    classDef link fill:#FF6B6B,stroke:#C0392B,color:#fff,stroke-width:2px
+    classDef bind fill:#45B7D1,stroke:#2980B9,color:#fff,stroke-width:2px
+    classDef output fill:#E8E8E8,stroke:#7F8C8D,color:#333,stroke-width:2px
+    classDef lib fill:#85C1E9,stroke:#2980B9,color:#333,stroke-width:1px
+
+    %% ═══════════════════════════════════════
+    %% Build & Deployment Pipeline
+    %% 32 Steps in COMPILE.JCL
+    %% ═══════════════════════════════════════
+
+    subgraph Sources ["<b>Source Libraries</b>"]
+        SRCLIB["BANK.PLI.SOURCE<br/><i>10 PL/I programs</i>"]
+        COPYLIB["BANK.PLI.COPYLIB<br/><i>7 copylib members</i>"]
+        JCLLIB["BANK.JCL<br/><i>COMPILE.JCL<br/>RUNBATCH.JCL</i>"]
+    end
+
+    subgraph Phase1 ["<b>Phase 1: Foundation Package</b>"]
+        direction LR
+        PKG_COMP["Compile BNKPKG<br/><i>IBMZPLI PROC</i>"]
+        PKG_LINK["Link BNKPKG<br/><i>IEWL REUS</i>"]
+        PKG_COMP --> PKG_LINK
+    end
+
+    subgraph Phase2 ["<b>Phase 2: Batch Programs (No CICS)</b>"]
+        direction TB
+        subgraph BatchDB2 ["DB2 Batch"]
+            B_DBRM1["DB2 Precompile<br/>BNKBATCH<br/><i>DSNHPC</i>"]
+            B_COMP1["PL/I Compile<br/>BNKBATCH"]
+            B_LINK1["Link-Edit<br/>→ BANK.LOADLIB"]
+            B_DBRM1 --> B_COMP1 --> B_LINK1
+        end
+        subgraph BatchPure ["Pure Batch"]
+            B_COMP2["Compile BNKAUDIT"]
+            B_LINK2["Link BNKAUDIT"]
+            B_COMP3["Compile BNKARCH"]
+            B_LINK3["Link BNKARCH"]
+            B_COMP4["Compile BNKFX"]
+            B_LINK4["Link BNKFX"]
+            B_COMP2 --> B_LINK2
+            B_COMP3 --> B_LINK3
+            B_COMP4 --> B_LINK4
+        end
+    end
+
+    subgraph Phase3 ["<b>Phase 3: CICS Programs</b>"]
+        direction TB
+        subgraph CICSBatch ["DB2 + CICS"]
+            C_DBRM1["DB2 Precompile<br/>BNKMAIN<br/><i>DSNHPC</i>"]
+            C_TRANS1["CICS Translate<br/>BNKMAIN<br/><i>DFHEITVL</i>"]
+            C_COMP1["PL/I Compile<br/>BNKMAIN"]
+            C_LINK1["Link-Edit<br/>→ BANK.CICSLOAD"]
+            C_DBRM1 --> C_TRANS1 --> C_COMP1 --> C_LINK1
+        end
+        subgraph CICSOnly ["CICS Only (DB2 stubs)"]
+            C_COMP2["Compile BNKCUST"]
+            C_LINK2["Link BNKCUST<br/>→ CICSLOAD"]
+            C_COMP3["Compile BNKACCT"]
+            C_LINK3["Link BNKACCT"]
+            C_COMP4["Compile BNKXFER"]
+            C_LINK4["Link BNKXFER"]
+            C_COMP2 --> C_LINK2
+            C_COMP3 --> C_LINK3
+            C_COMP4 --> C_LINK4
+        end
+        subgraph CICSCredt ["DB2 + CICS (Credit)"]
+            C_DBRM2["DB2 Precompile<br/>BNKCREDT"]
+            C_TRANS2["CICS Translate<br/>BNKCREDT"]
+            C_COMP5["PL/I Compile"]
+            C_LINK5["Link-Edit<br/>→ CICSLOAD"]
+            C_DBRM2 --> C_TRANS2 --> C_COMP5 --> C_LINK5
+        end
+    end
+
+    subgraph Phase4 ["<b>Phase 4: DB2 BIND</b>"]
+        direction LR
+        BIND["DSNTIAD BIND PACKAGE<br/><i>6 programs:</i><br/>BNKMAIN, BNKCUST, BNKACCT<br/>BNKXFER, BNKBATCH, BNKCREDT"]
+        BINDPLAN["BIND PLAN BANKPLAN<br/><i>Collects all packages</i>"]
+        BIND --> BINDPLAN
+    end
+
+    subgraph Outputs ["<b>Deployment Targets</b>"]
+        LOADLIB["BANK.LOADLIB<br/><i>Batch load modules</i><br/>BNKPKG, BNKBATCH,<br/>BNKAUDIT, BNKARCH, BNKFX"]
+        CICSLOAD["BANK.CICSLOAD<br/><i>CICS load modules</i><br/>BNKMAIN, BNKCUST,<br/>BNKACCT, BNKXFER, BNKCREDT"]
+        DB2PLAN["DB2 BANKPLAN<br/><i>DB2 access plan</i>"]
+    end
+
+    %% Flow
+    SRCLIB --> Phase1
+    COPYLIB -.->|"%INCLUDE"| Phase1
+    COPYLIB -.->|"%INCLUDE"| Phase2
+    COPYLIB -.->|"%INCLUDE"| Phase3
+
+    Phase1 --> Phase2
+    Phase1 --> Phase3
+
+    B_LINK1 --> LOADLIB
+    B_LINK2 --> LOADLIB
+    B_LINK3 --> LOADLIB
+    B_LINK4 --> LOADLIB
+
+    C_LINK1 --> CICSLOAD
+    C_LINK2 --> CICSLOAD
+    C_LINK3 --> CICSLOAD
+    C_LINK4 --> CICSLOAD
+    C_LINK5 --> CICSLOAD
+
+    Phase2 --> Phase4
+    Phase3 --> Phase4
+    BIND --> DB2PLAN
+
+    class SRCLIB,COPYLIB,JCLLIB source
+    class B_DBRM1,C_DBRM1,C_DBRM2 precomp
+    class PKG_COMP,B_COMP1,B_COMP2,B_COMP3,B_COMP4,C_COMP1,C_COMP2,C_COMP3,C_COMP4,C_COMP5,C_TRANS1,C_TRANS2 compile
+    class PKG_LINK,B_LINK1,B_LINK2,B_LINK3,B_LINK4,C_LINK1,C_LINK2,C_LINK3,C_LINK4,C_LINK5 link
+    class BIND,BINDPLAN bind
+    class LOADLIB,CICSLOAD,DB2PLAN output

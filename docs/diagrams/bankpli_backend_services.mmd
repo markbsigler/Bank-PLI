@@ -1,0 +1,110 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '13px' } } }%%
+flowchart TB
+    classDef mainApp fill:#FF6B6B,stroke:#C0392B,color:#fff,stroke-width:2px
+    classDef cicsApp fill:#F7DC6F,stroke:#F39C12,color:#333,stroke-width:2px
+    classDef batchApp fill:#96CEB4,stroke:#27AE60,color:#333,stroke-width:2px
+    classDef middleware fill:#BB8FCE,stroke:#8E44AD,color:#fff,stroke-width:2px
+    classDef dataStore fill:#45B7D1,stroke:#2980B9,color:#fff,stroke-width:2px
+
+    %% ═══════════════════════════════════════
+    %% CICS Backend Services Architecture
+    %% ═══════════════════════════════════════
+
+    subgraph CICSRegion ["<b>CICS Transaction Server Region</b>"]
+        
+        subgraph TerminalMgmt ["Terminal Management"]
+            BMS["BMS Map<br/>Screen I/O"]
+            RECEIVE["EXEC CICS RECEIVE MAP"]
+            SEND["EXEC CICS SEND MAP"]
+        end
+
+        subgraph Dispatch ["<b>Transaction Dispatcher</b>"]
+            BNKMAIN["<b>BNKMAIN</b><br/>Transaction Router<br/><i>BNKT transaction</i>"]
+            
+            subgraph RoutingTable ["Dispatch Table"]
+                RT1["'CUST' → BNKCUST"]
+                RT2["'ACCT' → BNKACCT"]
+                RT3["'XFER' → BNKXFER"]
+                RT4["'MENU' → internal"]
+                RT5["'BTCH' → BNKBATCH"]
+            end
+        end
+
+        subgraph Services ["<b>CICS Business Services</b>"]
+            BNKCUST["<b>BNKCUST</b><br/>Customer Service<br/><i>Full CRUD</i>"]
+            BNKACCT["<b>BNKACCT</b><br/>Account Service<br/><i>Management</i>"]
+            BNKXFER["<b>BNKXFER</b><br/>Transfer Service<br/><i>2-Phase Update</i>"]
+            BNKCREDT["<b>BNKCREDT</b><br/>Credit Service<br/><i>Multitasking</i>"]
+        end
+
+        subgraph CICSServices ["<b>CICS System Services</b>"]
+            LINK["EXEC CICS LINK"]
+            COMMAREA["COMMAREA<br/>Data Exchange"]
+            SYNCPOINT["EXEC CICS SYNCPOINT"]
+            ABEND_HANDLER["EXEC CICS HANDLE ABEND"]
+            GETMAIN["EXEC CICS GETMAIN"]
+            FREEMAIN["EXEC CICS FREEMAIN"]
+            ASKTIME["EXEC CICS ASKTIME"]
+            ENQ["EXEC CICS ENQ/DEQ"]
+        end
+
+        subgraph TaskMgmt ["<b>Multitasking (BNKCREDT)</b>"]
+            ATTACH["EXEC CICS START<br/><i>Attach subtask</i>"]
+            EVENT_WAIT["EVENT WAIT<br/><i>Completion query</i>"]
+            EXT_VARS["EXTERNAL credit_count<br/><i>Cross-task shared</i>"]
+        end
+    end
+
+    subgraph DB2Subsystem ["<b>DB2 Subsystem</b>"]
+        DSNHLI["DB2 Call Interface"]
+        CUSTOMER[("CUSTOMER_TABLE")]
+        ACCOUNT[("ACCOUNT_TABLE")]
+        TRANSACTION[("TRANSACTION_TABLE")]
+    end
+
+    subgraph VSAMCluster ["<b>VSAM Cluster</b>"]
+        KSDS[("VSAM KSDS<br/>BANK.VSAM.CUSTFILE")]
+    end
+
+    %% Terminal flow
+    BMS --> RECEIVE --> BNKMAIN
+    BNKMAIN --> SEND --> BMS
+
+    %% Dispatch
+    BNKMAIN --> RoutingTable
+    RT1 -->|"LINK"| BNKCUST
+    RT2 -->|"LINK"| BNKACCT
+    RT3 -->|"LINK"| BNKXFER
+    RT5 -->|"LINK"| BNKBATCH["BNKBATCH<br/><i>Batch via CICS</i>"]
+
+    %% COMMAREA passing
+    BNKMAIN <-->|"COMMAREA"| BNKCUST
+    BNKMAIN <-->|"COMMAREA"| BNKACCT
+    BNKMAIN <-->|"COMMAREA"| BNKXFER
+
+    %% DB2 access
+    BNKCUST -->|"SQL"| DSNHLI --> CUSTOMER
+    BNKXFER -->|"SQL"| DSNHLI
+    DSNHLI --> ACCOUNT
+
+    %% VSAM access
+    BNKCREDT -->|"READ"| KSDS
+
+    %% Multitasking
+    BNKCREDT --> ATTACH
+    BNKCREDT --> EVENT_WAIT
+    BNKCREDT --> EXT_VARS
+    EXT_VARS -.->|"shared"| BNKMAIN
+
+    %% CICS services usage
+    BNKMAIN --> ABEND_HANDLER
+    BNKXFER --> SYNCPOINT
+    BNKMAIN --> GETMAIN
+    BNKMAIN --> FREEMAIN
+    BNKMAIN --> ASKTIME
+    BNKXFER --> ENQ
+
+    class BNKMAIN mainApp
+    class BNKCUST,BNKACCT,BNKXFER,BNKCREDT,BNKBATCH cicsApp
+    class LINK,COMMAREA,SYNCPOINT,ABEND_HANDLER,GETMAIN,FREEMAIN,ASKTIME,ENQ,ATTACH,EVENT_WAIT,EXT_VARS middleware
+    class CUSTOMER,ACCOUNT,TRANSACTION,KSDS dataStore

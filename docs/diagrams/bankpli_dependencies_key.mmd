@@ -1,0 +1,53 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '14px' } } }%%
+flowchart TD
+    classDef mainApp fill:#FF6B6B,stroke:#C0392B,color:#fff,stroke-width:2px
+    classDef cicsApp fill:#F7DC6F,stroke:#F39C12,color:#333,stroke-width:2px
+    classDef batchApp fill:#96CEB4,stroke:#27AE60,color:#333,stroke-width:2px
+    classDef foundation fill:#4ECDC4,stroke:#1ABC9C,color:#333,stroke-width:2px
+    classDef dataStore fill:#45B7D1,stroke:#2980B9,color:#fff,stroke-width:2px
+
+    %% ═══════════════════════════════════
+    %% Key Critical Dependencies Only
+    %% ═══════════════════════════════════
+
+    BNKMAIN["<b>BNKMAIN</b><br/>Dispatcher"]
+
+    BNKCUST["<b>BNKCUST</b><br/>Customer"]
+    BNKACCT["<b>BNKACCT</b><br/>Account"]
+    BNKXFER["<b>BNKXFER</b><br/>Transfer"]
+    BNKCREDT["<b>BNKCREDT</b><br/>Credit"]
+    
+    BNKBATCH["<b>BNKBATCH</b><br/>Batch Gen"]
+    
+    BNKPKG["<b>BNKPKG</b><br/>Root Package"]
+
+    DB2[("DB2")]
+    VSAM[("VSAM")]
+
+    %% Dispatch links (runtime)
+    BNKMAIN ==>|"CICS LINK"| BNKCUST
+    BNKMAIN ==>|"CICS LINK"| BNKACCT
+    BNKMAIN ==>|"CICS LINK"| BNKXFER
+    BNKMAIN ==>|"CICS LINK"| BNKBATCH
+    BNKCREDT -.->|"EXTERNAL vars"| BNKMAIN
+
+    %% Data dependencies (critical path)
+    BNKCUST ==>|"CRUD"| DB2
+    BNKXFER ==>|"2-Phase"| DB2
+    BNKBATCH ==>|"INSERT"| DB2
+    BNKBATCH ==>|"WRITE"| VSAM
+    BNKCREDT -.->|"READ"| VSAM
+
+    %% Package dependency
+    BNKPKG -.->|"types/constants"| BNKMAIN
+    BNKPKG -.->|"types/constants"| BNKCUST
+    BNKPKG -.->|"types/constants"| BNKACCT
+    BNKPKG -.->|"types/constants"| BNKXFER
+    BNKPKG -.->|"types/constants"| BNKBATCH
+    BNKPKG -.->|"types/constants"| BNKCREDT
+
+    class BNKMAIN mainApp
+    class BNKCUST,BNKACCT,BNKXFER,BNKCREDT cicsApp
+    class BNKBATCH batchApp
+    class BNKPKG foundation
+    class DB2,VSAM dataStore

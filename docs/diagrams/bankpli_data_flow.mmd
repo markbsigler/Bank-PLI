@@ -1,0 +1,108 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '13px' } } }%%
+flowchart TB
+    classDef mainApp fill:#FF6B6B,stroke:#C0392B,color:#fff,stroke-width:2px
+    classDef cicsApp fill:#F7DC6F,stroke:#F39C12,color:#333,stroke-width:2px
+    classDef batchApp fill:#96CEB4,stroke:#27AE60,color:#333,stroke-width:2px
+    classDef dataStore fill:#45B7D1,stroke:#2980B9,color:#fff,stroke-width:2px
+    classDef external fill:#BB8FCE,stroke:#8E44AD,color:#fff,stroke-width:2px
+    classDef report fill:#E8E8E8,stroke:#7F8C8D,color:#333,stroke-width:2px
+
+    %% ═══════════════════════════════════════
+    %% Complete Data Flow Through the System
+    %% ═══════════════════════════════════════
+
+    subgraph Input ["<b>Data Sources / Input</b>"]
+        TERMINAL["3270 Terminal<br/><i>BMS Maps</i>"]
+        JCL_PARM["JCL PARM<br/><i>Batch Parameters</i>"]
+        COBOL_CALL["COBOL Programs<br/><i>ENTRY BNKENTRY</i>"]
+    end
+
+    subgraph OnlineFlow ["<b>CICS Online Data Flow</b>"]
+        BNKMAIN["<b>BNKMAIN</b><br/>Reads COMMAREA<br/>Dispatches by TXN type"]
+        BNKCUST["<b>BNKCUST</b><br/>CUSTOMER_TABLE<br/>SELECT/INSERT/UPDATE/DELETE"]
+        BNKACCT["<b>BNKACCT</b><br/>Account Management<br/><i>DB2 prepared</i>"]
+        BNKXFER["<b>BNKXFER</b><br/>ACCOUNT_TABLE<br/>2-phase debit/credit"]
+        BNKCREDT["<b>BNKCREDT</b><br/>Reads VSAM KSDS<br/>EXTERNAL credit_count"]
+    end
+
+    subgraph BatchFlow ["<b>Batch Data Flow</b>"]
+        BNKBATCH["<b>BNKBATCH</b><br/>Generates test data<br/>Multi-format writes"]
+        BNKAUDIT["<b>BNKAUDIT</b><br/>Reads + aggregates<br/>3 report outputs"]
+        BNKARCH["<b>BNKARCH</b><br/>REGIONAL(3) keyed I/O<br/>TRANSIENT + BACKWARDS"]
+        BNKFX["<b>BNKFX</b><br/>Currency conversion<br/>Rate table processing"]
+    end
+
+    subgraph Persistence ["<b>Persistence Layer</b>"]
+        subgraph DB2 ["DB2 Tables"]
+            CUSTOMER[("CUSTOMER_TABLE<br/><i>CUSTID, FIRST_NAME,<br/>LAST_NAME, ACCT_BAL</i>")]
+            ACCOUNT[("ACCOUNT_TABLE<br/><i>ACCT_NUM, CUST_ID,<br/>BALANCE, STATUS</i>")]
+            TRANSACTION[("TRANSACTION_TABLE<br/><i>TXN_ID, ACCT_NUM,<br/>AMOUNT, TXN_TYPE</i>")]
+        end
+        subgraph VSAM ["VSAM Files"]
+            VSAM_KSDS[("VSAM KSDS<br/><i>BANK.VSAM.CUSTFILE<br/>Key: CUSTID</i>")]
+        end
+        subgraph SeqFiles ["Sequential / Regional"]
+            SEQFILE[("Sequential File<br/><i>RECSIZE 2048</i>")]
+            REGIONAL[("REGIONAL(3)<br/><i>Keyed access</i>")]
+            TRANSIENT[("TRANSIENT File<br/><i>Temporary buffer</i>")]
+        end
+        subgraph Reports ["Report Output"]
+            SYSPRINT["SYSPRINT<br/><i>Standard output</i>"]
+            AUDITLOG["AUDITLOG<br/><i>Audit trail</i>"]
+            DETAILRP["DETAILRP<br/><i>Detail report</i>"]
+            SUMMARYR["SUMMARYR<br/><i>Summary report</i>"]
+        end
+    end
+
+    subgraph SharedData ["<b>Shared Memory</b>"]
+        COMMAREA["CICS COMMAREA<br/><i>Inter-program data</i>"]
+        EXTERNAL_VARS["EXTERNAL Variables<br/><i>credit_count<br/>shared between tasks</i>"]
+    end
+
+    %% Input flows
+    TERMINAL -->|"BMS I/O"| BNKMAIN
+    JCL_PARM -->|"PARM string"| BNKBATCH
+    JCL_PARM -->|"PARM string"| BNKAUDIT
+    JCL_PARM -->|"PARM string"| BNKARCH
+    COBOL_CALL -->|"CALL BNKENTRY"| BNKMAIN
+
+    %% CICS dispatch
+    BNKMAIN -->|"EXEC CICS LINK"| BNKCUST
+    BNKMAIN -->|"EXEC CICS LINK"| BNKACCT
+    BNKMAIN -->|"EXEC CICS LINK"| BNKXFER
+    BNKMAIN -->|"EXEC CICS LINK"| BNKBATCH
+
+    %% Online → DB2
+    BNKCUST -->|"SQL CRUD"| CUSTOMER
+    BNKXFER -->|"SQL UPDATE ×2"| ACCOUNT
+    BNKBATCH -->|"SQL INSERT"| TRANSACTION
+
+    %% Online → VSAM
+    BNKCREDT -->|"READ VSAM"| VSAM_KSDS
+    BNKBATCH -->|"WRITE KSDS"| VSAM_KSDS
+
+    %% Batch → Files
+    BNKBATCH -->|"WRITE SEQ"| SEQFILE
+    BNKBATCH -->|"PUT PRINT"| SYSPRINT
+    BNKARCH -->|"READ/WRITE"| REGIONAL
+    BNKARCH -->|"WRITE"| TRANSIENT
+
+    %% Audit → Reports
+    BNKAUDIT -->|"WRITE"| AUDITLOG
+    BNKAUDIT -->|"WRITE"| DETAILRP
+    BNKAUDIT -->|"WRITE"| SUMMARYR
+
+    %% Shared data flows
+    BNKMAIN <-->|"pass/receive"| COMMAREA
+    COMMAREA <-->|"pass/receive"| BNKCUST
+    COMMAREA <-->|"pass/receive"| BNKACCT
+    COMMAREA <-->|"pass/receive"| BNKXFER
+    BNKCREDT -->|"write"| EXTERNAL_VARS
+    EXTERNAL_VARS -->|"read"| BNKMAIN
+
+    class BNKMAIN mainApp
+    class BNKCUST,BNKACCT,BNKXFER,BNKCREDT cicsApp
+    class BNKBATCH,BNKAUDIT,BNKARCH,BNKFX batchApp
+    class CUSTOMER,ACCOUNT,TRANSACTION,VSAM_KSDS,SEQFILE,REGIONAL,TRANSIENT dataStore
+    class TERMINAL,JCL_PARM,COBOL_CALL external
+    class SYSPRINT,AUDITLOG,DETAILRP,SUMMARYR report

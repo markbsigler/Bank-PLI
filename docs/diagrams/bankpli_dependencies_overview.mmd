@@ -1,0 +1,49 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '14px' } } }%%
+flowchart LR
+    classDef statsBox fill:#F7DC6F,stroke:#F39C12,color:#333,stroke-width:2px
+    classDef progBox fill:#FF6B6B,stroke:#C0392B,color:#fff,stroke-width:2px
+    classDef incBox fill:#4ECDC4,stroke:#1ABC9C,color:#333,stroke-width:2px
+    classDef jclBox fill:#E8E8E8,stroke:#7F8C8D,color:#333,stroke-width:2px
+
+    subgraph stats["📊  Project Statistics"]
+        direction TB
+        S1["<b>20 Source Files</b><br/>10 PL/I Programs<br/>7 Copylib Includes<br/>2 JCL Procedures<br/>1 README"]
+        S2["<b>~7,300 Lines of Code</b><br/>Largest: BNKXFER (610)<br/>Smallest: BNKPKG (309)"]
+        S3["<b>150+ PL/I Constructs</b><br/>99%+ Language Coverage"]
+        S4["<b>Technology Stack</b><br/>Enterprise PL/I V6.1<br/>DB2 for z/OS V12+<br/>CICS TS V5.6+<br/>VSAM / QSAM / REGIONAL"]
+    end
+
+    subgraph programs["📁  Programs (10)"]
+        direction TB
+        P_CICS["<b>CICS Online (5)</b><br/>BNKMAIN · BNKCUST<br/>BNKACCT · BNKXFER<br/>BNKCREDT"]
+        P_BATCH["<b>Batch (4)</b><br/>BNKBATCH · BNKAUDIT<br/>BNKARCH · BNKFX"]
+        P_PKG["<b>Package (1)</b><br/>BNKPKG"]
+    end
+
+    subgraph includes["📦  Includes (7)"]
+        direction TB
+        I_STRUCT["<b>Data Structures (3)</b><br/>CUSTSTR · ACCTSTR · TXNSTR"]
+        I_SYS["<b>System Defs (2)</b><br/>SQLCA · CICSDEF"]
+        I_CROSS["<b>Cross-Cutting (2)</b><br/>ERRHAND · PICFMT"]
+    end
+
+    subgraph dep_summary["🔗  Dependency Summary"]
+        direction TB
+        D1["BNKPKG → included by ALL 9 programs"]
+        D2["ERRHAND → included by 8 programs<br/>(not BNKAUDIT)"]
+        D3["CUSTSTR → 7 programs"]
+        D4["TXNSTR → 7 programs"]
+        D5["ACCTSTR → 6 programs"]
+        D6["SQLCA → 6 programs"]
+        D7["CICSDEF → 5 programs (CICS only)"]
+        D8["PICFMT → 1 program (BNKFX)"]
+    end
+
+    stats --> programs
+    programs --> includes
+    includes --> dep_summary
+
+    class S1,S2,S3,S4 statsBox
+    class P_CICS,P_BATCH,P_PKG progBox
+    class I_STRUCT,I_SYS,I_CROSS incBox
+    class D1,D2,D3,D4,D5,D6,D7,D8 jclBox
