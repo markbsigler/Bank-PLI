@@ -1,0 +1,308 @@
+ /*********************************************************************/
+ /*  BNKPKG.PLI - Banking System Root Package                        */
+ /*                                                                   */
+ /*  Enterprise PL/I Package demonstrating:                          */
+ /*    - PACKAGE with EXPORTS                                        */
+ /*    - Preprocessor directives (%DECLARE, %IF, %ACTIVATE)          */
+ /*    - DEFINE ALIAS, ORDINAL, STRUCTURE                            */
+ /*    - DEFAULT statement                                           */
+ /*    - Named constants with STATIC & VALUE                         */
+ /*    - GENERIC entries                                             */
+ /*    - ENTRY declarations with OPTIONS                             */
+ /*    - CONDITION declarations                                      */
+ /*    - FORMAT constants                                            */
+ /*********************************************************************/
+
+ %PROCESS PACKAGE EXPORTS(*);
+ %PROCESS RULES(IBM) MARGINS(2,72) SOURCE XREF AGGREGATE ATTRIBUTES;
+ %PROCESS LIMITS(FIXEDDEC(15,2));
+ %PROCESS LIST MAP SELECT;
+ 
+ %DECLARE DEBUG BIT(1) VALUE('1'B);  /* Compilation mode switch */
+
+ /* %REPLACE for text substitution macros */
+ %REPLACE MAX_RETRY_STR BY '3';
+ %REPLACE LOG_PREFIX BY 'BNKSYS';
+ %REPLACE VERSION_NUM BY '1.0.0';
+
+ /* Preprocessor string functions */
+ %DCL BUILD_TAG CHAR;
+ %BUILD_TAG = %SUBSTR(LOG_PREFIX,1,3) || '_' || MAX_RETRY_STR;
+ /* BUILD_TAG now contains 'BNK_3' */
+
+ %IF %LENGTH(BUILD_TAG) > 5 %THEN
+   %PUT SKIP LIST('Warning: Build tag exceeds 5 characters');
+ %ENDIF;
+
+ BANK_SYSTEM: PACKAGE EXPORTS(*);
+
+   /*-----------------------------------------------------------------*/
+   /* Preprocessor Configuration                                      */
+   /*-----------------------------------------------------------------*/
+   %IF DEBUG %THEN %DO;
+     %ACTIVATE STRINGRANGE, SUBSCRIPTRANGE;
+     %DECLARE TRACE CHAR VALUE('YES');
+   %END;
+   %ELSE %DO;
+     %DEACTIVATE STRINGRANGE, SUBSCRIPTRANGE;
+     %DECLARE TRACE CHAR VALUE('NO');
+   %END;
+
+   /*-----------------------------------------------------------------*/
+   /* Default Precision and Attributes                                */
+   /*-----------------------------------------------------------------*/
+   DEFAULT RANGE(*) FIXED DECIMAL(15,2);
+   DEFAULT RANGE(I,J,K,N,M,IDX,CNT) FIXED BINARY(31,0);
+
+   /*-----------------------------------------------------------------*/
+   /* Type Aliases - Demonstrates DEFINE ALIAS                        */
+   /*-----------------------------------------------------------------*/
+   DEFINE ALIAS ACCT_NUM_T    CHAR(8);
+   DEFINE ALIAS CUST_NUM_T    FIXED DECIMAL(10,0);
+   DEFINE ALIAS SORT_CODE_T   CHAR(6);
+   DEFINE ALIAS CURRENCY_T    FIXED DECIMAL(15,2);
+   DEFINE ALIAS PERCENT_T     FLOAT DECIMAL(6);
+   DEFINE ALIAS DATE_T        CHAR(10);        /* YYYY-MM-DD */
+   DEFINE ALIAS TIME_T        CHAR(8);         /* HH:MM:SS */
+   DEFINE ALIAS TIMESTAMP_T   CHAR(26);
+   DEFINE ALIAS AMOUNT_T      FIXED DECIMAL(15,2);
+   DEFINE ALIAS RATE_T        FLOAT DECIMAL(12);
+
+   /*-----------------------------------------------------------------*/
+   /* Ordinal Types - Account Type Enumeration                        */
+   /*-----------------------------------------------------------------*/
+   DEFINE ORDINAL ACCT_TYPE_T
+     (CHECKING       VALUE(1),
+      SAVINGS        VALUE(2),
+      ISA            VALUE(3),
+      MORTGAGE       VALUE(4),
+      LOAN           VALUE(5));
+
+   /*-----------------------------------------------------------------*/
+   /* Ordinal Types - Transaction Type Enumeration                    */
+   /*-----------------------------------------------------------------*/
+   DEFINE ORDINAL TXN_TYPE_T
+     (TXN_DEBIT      VALUE(1),
+      TXN_CREDIT     VALUE(2),
+      TXN_TRANSFER   VALUE(3),
+      TXN_FEE        VALUE(4),
+      TXN_INTEREST   VALUE(5),
+      TXN_DIVIDEND   VALUE(6),
+      TXN_PENALTY    VALUE(7));
+
+   /*-----------------------------------------------------------------*/
+   /* System-Wide Constants                                           */
+   /*-----------------------------------------------------------------*/
+   DECLARE MAX_ACCOUNTS        FIXED BIN(31) STATIC INIT(999999);
+   DECLARE MAX_CUSTOMERS       FIXED BIN(31) STATIC INIT(999999);
+   DECLARE MAX_DAILY_TRANSFERS FIXED BIN(31) STATIC INIT(100);
+   DECLARE MIN_BALANCE         CURRENCY_T    STATIC INIT(0.00);
+   DECLARE MAX_OVERDRAFT       CURRENCY_T    STATIC INIT(5000.00);
+   DECLARE SYSTEM_SORT_CODE    SORT_CODE_T   STATIC INIT('040004');
+
+   /*-----------------------------------------------------------------*/
+   /* Account Type Rate Tables - Static Arrays                        */
+   /*-----------------------------------------------------------------*/
+   DECLARE INTEREST_RATES(5) RATE_T STATIC INIT(
+     0.001,    /* CHECKING - 0.1% */
+     0.035,    /* SAVINGS  - 3.5% */
+     0.042,    /* ISA      - 4.2% */
+     0.068,    /* MORTGAGE - 6.8% */
+     0.095);   /* LOAN     - 9.5% */
+
+   DECLARE OVERDRAFT_FEES(5) CURRENCY_T STATIC INIT(
+     35.00,    /* CHECKING */
+     25.00,    /* SAVINGS  */
+     0.00,     /* ISA - No overdraft */
+     0.00,     /* MORTGAGE */
+     0.00);    /* LOAN */
+
+   /*-----------------------------------------------------------------*/
+   /* Transaction Code Mapping Table                                  */
+   /*-----------------------------------------------------------------*/
+   DECLARE TXN_CODES(7) CHAR(3) STATIC INIT(
+     'DBT',    /* DEBIT */
+     'CRD',    /* CREDIT */
+     'XFR',    /* TRANSFER */
+     'FEE',    /* FEE */
+     'INT',    /* INTEREST */
+     'DIV',    /* DIVIDEND */
+     'PEN');   /* PENALTY */
+
+   /*-----------------------------------------------------------------*/
+   /* Status and Return Code Constants                                */
+   /*-----------------------------------------------------------------*/
+   DECLARE RC_SUCCESS          FIXED BIN(31) VALUE(0)  STATIC;
+   DECLARE RC_NOT_FOUND        FIXED BIN(31) VALUE(4)  STATIC;
+   DECLARE RC_DUPLICATE        FIXED BIN(31) VALUE(8)  STATIC;
+   DECLARE RC_INVALID_DATA     FIXED BIN(31) VALUE(12) STATIC;
+   DECLARE RC_INSUFF_FUNDS     FIXED BIN(31) VALUE(16) STATIC;
+   DECLARE RC_OVERDRAFT        FIXED BIN(31) VALUE(20) STATIC;
+   DECLARE RC_DB_ERROR         FIXED BIN(31) VALUE(24) STATIC;
+   DECLARE RC_VSAM_ERROR       FIXED BIN(31) VALUE(28) STATIC;
+   DECLARE RC_SECURITY_FAIL    FIXED BIN(31) VALUE(32) STATIC;
+
+   /*-----------------------------------------------------------------*/
+   /* Custom Condition Declarations                                   */
+   /*-----------------------------------------------------------------*/
+   DECLARE OVERDRAFT_LIMIT     CONDITION;
+   DECLARE INSUFFICIENT_FUNDS  CONDITION;
+   DECLARE INVALID_ACCOUNT     CONDITION;
+   DECLARE CREDIT_THRESHOLD    CONDITION;
+   DECLARE DUPLICATE_KEY       CONDITION;
+   DECLARE SECURITY_VIOLATION  CONDITION;
+
+   /*-----------------------------------------------------------------*/
+   /* Format Constants for Report Generation                          */
+   /*-----------------------------------------------------------------*/
+   DECLARE ACCT_HDR_FMT       FORMAT STATIC INIT(
+     (A(8),X(2),A(30),X(2),A(12),X(2),A(15),X(2),A(10)));
+   
+   DECLARE ACCT_DTL_FMT       FORMAT STATIC INIT(
+     (A(8),X(2),A(30),X(2),F(15,2),X(2),F(15,2),X(2),A(10)));
+   
+   DECLARE TXN_FMT            FORMAT STATIC INIT(
+     (A(8),X(1),A(10),X(1),A(8),X(1),A(3),X(1),A(40),X(1),F(15,2)));
+
+   DECLARE PAGE_HDR_FMT       FORMAT STATIC INIT(
+     (SKIP(1),COLUMN(1),A(80),SKIP(2)));
+
+   /*-----------------------------------------------------------------*/
+   /* Generic Entry Declaration - FORMAT_AMOUNT                        */
+   /* Demonstrates GENERIC attribute with type-based dispatch         */
+   /*-----------------------------------------------------------------*/
+   DECLARE FORMAT_AMOUNT GENERIC (
+     FORMAT_DEC15  WHEN(FIXED DECIMAL(15,2)),
+     FORMAT_DEC7   WHEN(FIXED DECIMAL(7,2)),
+     FORMAT_FLOAT  WHEN(FLOAT DECIMAL));
+
+   DECLARE FORMAT_DEC15 ENTRY(FIXED DECIMAL(15,2))
+     RETURNS(CHAR(20) VARYING)
+     OPTIONS(REENTRANT);
+
+   DECLARE FORMAT_DEC7 ENTRY(FIXED DECIMAL(7,2))
+     RETURNS(CHAR(12) VARYING)
+     OPTIONS(REENTRANT);
+
+   DECLARE FORMAT_FLOAT ENTRY(FLOAT DECIMAL)
+     RETURNS(CHAR(24) VARYING)
+     OPTIONS(REENTRANT);
+
+   /*-----------------------------------------------------------------*/
+   /* Utility Entry Declarations                                      */
+   /*-----------------------------------------------------------------*/
+   DECLARE VALIDATE_ACCT_NUM ENTRY(ACCT_NUM_T)
+     RETURNS(BIT(1))
+     OPTIONS(BYVALUE, REENTRANT);
+
+   DECLARE VALIDATE_SORT_CODE ENTRY(SORT_CODE_T)
+     RETURNS(BIT(1))
+     OPTIONS(BYVALUE, REENTRANT);
+
+   DECLARE CALC_CHECK_DIGIT ENTRY(CHAR(*))
+     RETURNS(CHAR(1))
+     OPTIONS(REENTRANT);
+
+   DECLARE GEN_ACCOUNT_NUM ENTRY(ACCT_TYPE_T ORDINAL)
+     RETURNS(ACCT_NUM_T)
+     OPTIONS(BYVALUE, REENTRANT);
+
+   DECLARE GEN_CUSTOMER_NUM ENTRY
+     RETURNS(CUST_NUM_T)
+     OPTIONS(REENTRANT);
+
+   /*-----------------------------------------------------------------*/
+   /* Date/Time Utility Entries                                       */
+   /*-----------------------------------------------------------------*/
+   DECLARE GET_CURRENT_DATE ENTRY
+     RETURNS(DATE_T)
+     OPTIONS(REENTRANT);
+
+   DECLARE GET_CURRENT_TIME ENTRY
+     RETURNS(TIME_T)
+     OPTIONS(REENTRANT);
+
+   DECLARE GET_CURRENT_TIMESTAMP ENTRY
+     RETURNS(TIMESTAMP_T)
+     OPTIONS(REENTRANT);
+
+   DECLARE DATE_DIFF_DAYS ENTRY(DATE_T, DATE_T)
+     RETURNS(FIXED BIN(31))
+     OPTIONS(BYVALUE, REENTRANT);
+
+   DECLARE ADD_DAYS_TO_DATE ENTRY(DATE_T, FIXED BIN(31))
+     RETURNS(DATE_T)
+     OPTIONS(BYVALUE, REENTRANT);
+
+   DECLARE ADD_MONTHS_TO_DATE ENTRY(DATE_T, FIXED BIN(31))
+     RETURNS(DATE_T)
+     OPTIONS(BYVALUE, REENTRANT);
+
+   /*-----------------------------------------------------------------*/
+   /* Financial Calculation Entries                                   */
+   /*-----------------------------------------------------------------*/
+   DECLARE CALC_SIMPLE_INTEREST ENTRY(
+     CURRENCY_T,           /* Principal */
+     RATE_T,               /* Annual rate */
+     FIXED BIN(31))        /* Days */
+     RETURNS(CURRENCY_T)
+     OPTIONS(BYVALUE, REENTRANT);
+
+   DECLARE CALC_COMPOUND_INTEREST ENTRY(
+     CURRENCY_T,           /* Principal */
+     RATE_T,               /* Annual rate */
+     FIXED BIN(31),        /* Periods */
+     FIXED BIN(31) OPTIONAL) /* Compound frequency - default 12 */
+     RETURNS(CURRENCY_T)
+     OPTIONS(BYVALUE, REENTRANT);
+
+   DECLARE CALC_PAYMENT ENTRY(
+     CURRENCY_T,           /* Principal */
+     RATE_T,               /* Annual rate */
+     FIXED BIN(31))        /* Term in months */
+     RETURNS(CURRENCY_T)
+     OPTIONS(BYVALUE, REENTRANT);
+
+   /*-----------------------------------------------------------------*/
+   /* Database Access Entry Points                                    */
+   /*-----------------------------------------------------------------*/
+   DECLARE DB_CONNECT ENTRY
+     RETURNS(FIXED BIN(31))
+     OPTIONS(REENTRANT);
+
+   DECLARE DB_DISCONNECT ENTRY
+     RETURNS(FIXED BIN(31))
+     OPTIONS(REENTRANT);
+
+   DECLARE DB_COMMIT ENTRY
+     RETURNS(FIXED BIN(31))
+     OPTIONS(REENTRANT);
+
+   DECLARE DB_ROLLBACK ENTRY
+     RETURNS(FIXED BIN(31))
+     OPTIONS(REENTRANT);
+
+   /*-----------------------------------------------------------------*/
+   /* Generic Structures - Demonstrates DEFINE STRUCTURE              */
+   /*-----------------------------------------------------------------*/
+   DEFINE STRUCTURE 1 RESPONSE_T,
+     2 STATUS_CODE      FIXED BIN(31),
+     2 ERROR_MSG        CHAR(256) VARYING,
+     2 SQLCODE          FIXED BIN(31),
+     2 VSAM_STATUS      CHAR(2),
+     2 TIMESTAMP        TIMESTAMP_T;
+
+   DEFINE STRUCTURE 1 AUDIT_REC_T,
+     2 AUDIT_ID         CHAR(16),
+     2 USER_ID          CHAR(8),
+     2 TERMINAL_ID      CHAR(4),
+     2 TRANSACTION_ID   CHAR(4),
+     2 TIMESTAMP        TIMESTAMP_T,
+     2 ACTION_CODE      CHAR(3),
+     2 ACCT_NUM         ACCT_NUM_T,
+     2 AMOUNT           CURRENCY_T,
+     2 OLD_BALANCE      CURRENCY_T,
+     2 NEW_BALANCE      CURRENCY_T,
+     2 DESCRIPTION      CHAR(80) VARYING;
+
+ END BANK_SYSTEM;

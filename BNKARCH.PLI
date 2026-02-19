@@ -1,0 +1,311 @@
+ /*********************************************************************/
+ /*  BNKARCH.PLI - Archive and Compliance Module                     */
+ /*                                                                   */
+ /*  Demonstrates:                                                   */
+ /*    - DIRECT file organization (REGIONAL(3) hash-based)           */
+ /*    - TRANSIENT files for temporary workspace                     */
+ /*    - LOCATE mode I/O (zero-copy buffer sharing)                  */
+ /*    - IGNORE statement (skip records)                             */
+ /*    - BACKWARDS option on READ                                    */
+ /*    - ENVIRONMENT(ADDBUFF) for performance tuning                 */
+ /*********************************************************************/
+
+ %PROCESS RULES(IBM) MARGINS(2,72) SOURCE XREF;
+ %PROCESS PACKAGE AGGREGATE LIMITS(NAME(31));
+
+ BNKARCH: PROCEDURE OPTIONS(MAIN, REENTRANT) REORDER;
+
+   /*-----------------------------------------------------------------*/
+   /* Include package and copybook definitions                        */
+   /*-----------------------------------------------------------------*/
+   %INCLUDE BNKPKG;
+   %INCLUDE TXNSTR;
+   %INCLUDE ERRHAND;
+
+   /*-----------------------------------------------------------------*/
+   /* File Declarations - Demonstrating DIRECT and TRANSIENT         */
+   /*-----------------------------------------------------------------*/
+   
+   /* DIRECT file for hash-based transaction archive lookup */
+   DECLARE AUDIT_DIRECT FILE RECORD DIRECT KEYED UPDATE
+     ENVIRONMENT(REGIONAL(3)           /* Hash-organized direct access */
+                 BLKSIZE(4096)
+                 RECSIZE(500)
+                 ADDBUFF(3));          /* 3 additional buffers */
+
+   /* TRANSIENT file for temporary regulatory report staging */
+   DECLARE SCRATCHPAD FILE RECORD OUTPUT TRANSIENT
+     ENVIRONMENT(CONSECUTIVE
+                 BLKSIZE(8000)
+                 RECSIZE(800));
+
+   /* Sequential audit log for BACKWARDS reading */
+   DECLARE AUDIT_LOG FILE RECORD INPUT SEQUENTIAL BACKWARDS
+     ENVIRONMENT(CONSECUTIVE
+                 BLKSIZE(32000)
+                 RECSIZE(500));
+
+   /*-----------------------------------------------------------------*/
+   /* Archive record structures                                       */
+   /*-----------------------------------------------------------------*/
+   
+   DECLARE 1 ARCHIVE_RECORD BASED(ARCHIVE_PTR),
+     2 TXN_HASH_KEY          CHAR(10),       /* Hash key for DIRECT access */
+     2 TXN_TIMESTAMP         CHAR(26),
+     2 TXN_TYPE              CHAR(1),
+     2 TXN_AMOUNT            FIXED DEC(15,2),
+     2 FROM_ACCOUNT          CHAR(10),
+     2 TO_ACCOUNT            CHAR(10),
+     2 USER_ID               CHAR(8),
+     2 TERMINAL_ID           CHAR(4),
+     2 COMPLIANCE_FLAGS      BIT(16),
+     2 ARCHIVE_STATUS        CHAR(1),        /* A=Active, P=Purged, X=Expired */
+     2 RETENTION_DATE        CHAR(10),
+     2 FILLER                CHAR(400);
+
+   DECLARE ARCHIVE_PTR POINTER;
+
+   DECLARE 1 REGULATORY_SUMMARY,
+     2 REPORT_DATE           CHAR(10),
+     2 TOTAL_TRANSACTIONS    FIXED BIN(31),
+     2 TOTAL_AMOUNT          FIXED DEC(15,2),
+     2 FLAGGED_COUNT         FIXED BIN(31),
+     2 SUSPICIOUS_AMOUNT     FIXED DEC(15,2),
+     2 CURRENCY_COUNT(10)    FIXED BIN(31);
+
+   /*-----------------------------------------------------------------*/
+   /* Working storage                                                 */
+   /*-----------------------------------------------------------------*/
+   
+   DECLARE LOOKUP_KEY          CHAR(10);
+   DECLARE SCAN_COUNT          FIXED BIN(31) INIT(0);
+   DECLARE SKIP_COUNT          FIXED BIN(31) INIT(0);
+   DECLARE CORRUPT_COUNT       FIXED BIN(31) INIT(0);
+
+   /*-----------------------------------------------------------------*/
+   /* Main Processing                                                 */
+   /*-----------------------------------------------------------------*/
+
+   PUT SKIP LIST('=== Archive and Compliance Processing ===');
+   
+   CALL DEMONSTRATE_DIRECT_ACCESS();
+   CALL DEMONSTRATE_TRANSIENT_FILES();
+   CALL DEMONSTRATE_LOCATE_MODE();
+   CALL DEMONSTRATE_BACKWARDS_READ();
+   CALL DEMONSTRATE_IGNORE_STATEMENT();
+
+   PUT SKIP LIST('Archive processing complete');
+
+   /*-----------------------------------------------------------------*/
+   /* Demonstrate DIRECT File Access (Hash-based lookup)              */
+   /*-----------------------------------------------------------------*/
+   DEMONSTRATE_DIRECT_ACCESS: PROCEDURE;
+     DECLARE I FIXED BIN(15);
+     DECLARE HASH_KEY CHAR(10);
+     
+     PUT SKIP(2) LIST('--- DIRECT File Access Demo ---');
+     
+     OPEN FILE(AUDIT_DIRECT) DIRECT UPDATE;
+
+     /* Write records using hash keys */
+     DO I = 1 TO 100;
+       ALLOCATE ARCHIVE_RECORD;
+       
+       /* Generate hash key from transaction ID */
+       HASH_KEY = 'TXN' || TRIM(I);
+       ARCHIVE_RECORD.TXN_HASH_KEY = HASH_KEY;
+       ARCHIVE_RECORD.TXN_TIMESTAMP = GET_CURRENT_TIMESTAMP();
+       ARCHIVE_RECORD.TXN_TYPE = 'D';
+       ARCHIVE_RECORD.TXN_AMOUNT = I * 100.00;
+       ARCHIVE_RECORD.FROM_ACCOUNT = '0000000001';
+       ARCHIVE_RECORD.TO_ACCOUNT = '0000000002';
+       ARCHIVE_RECORD.USER_ID = 'ARCHIVER';
+       ARCHIVE_RECORD.TERMINAL_ID = 'ARC1';
+       ARCHIVE_RECORD.COMPLIANCE_FLAGS = '0000000000000000'B;
+       ARCHIVE_RECORD.ARCHIVE_STATUS = 'A';
+       
+       /* DIRECT file write with hash key */
+       WRITE FILE(AUDIT_DIRECT) FROM(ARCHIVE_RECORD) KEYFROM(HASH_KEY);
+       
+       FREE ARCHIVE_RECORD;
+     END;
+
+     /* Random access lookup by hash key */
+     LOOKUP_KEY = 'TXN' || TRIM(50);
+     
+     ALLOCATE ARCHIVE_RECORD;
+     
+     READ FILE(AUDIT_DIRECT) INTO(ARCHIVE_RECORD) KEY(LOOKUP_KEY);
+     
+     PUT SKIP LIST('Direct lookup of ' || TRIM(LOOKUP_KEY) || ':');
+     PUT SKIP LIST('  Amount: ' || TRIM(ARCHIVE_RECORD.TXN_AMOUNT));
+     PUT SKIP LIST('  Timestamp: ' || TRIM(ARCHIVE_RECORD.TXN_TIMESTAMP));
+     
+     FREE ARCHIVE_RECORD;
+     
+     CLOSE FILE(AUDIT_DIRECT);
+     
+     PUT SKIP LIST('DIRECT file demonstration complete');
+
+   END DEMONSTRATE_DIRECT_ACCESS;
+
+   /*-----------------------------------------------------------------*/
+   /* Demonstrate TRANSIENT Files (Temporary workspace)               */
+   /*-----------------------------------------------------------------*/
+   DEMONSTRATE_TRANSIENT_FILES: PROCEDURE;
+     DECLARE I FIXED BIN(15);
+     DECLARE TEMP_RECORD CHAR(800);
+     
+     PUT SKIP(2) LIST('--- TRANSIENT File Demo ---');
+     
+     /* TRANSIENT files are automatically deleted when closed */
+     OPEN FILE(SCRATCHPAD) OUTPUT;
+
+     /* Use as temporary workspace for regulatory report staging */
+     DO I = 1 TO 50;
+       TEMP_RECORD = 'Regulatory line ' || TRIM(I) || 
+                     ' - Amount: ' || TRIM(I * 1000.00);
+       WRITE FILE(SCRATCHPAD) FROM(TEMP_RECORD);
+     END;
+
+     CLOSE FILE(SCRATCHPAD);
+     
+     PUT SKIP LIST('TRANSIENT file created and auto-deleted');
+     PUT SKIP LIST('50 temporary records processed');
+
+   END DEMONSTRATE_TRANSIENT_FILES;
+
+   /*-----------------------------------------------------------------*/
+   /* Demonstrate LOCATE Mode I/O (Zero-copy processing)              */
+   /*-----------------------------------------------------------------*/
+   DEMONSTRATE_LOCATE_MODE: PROCEDURE;
+     DECLARE BUFFER_PTR POINTER;
+     DECLARE I FIXED BIN(15);
+     
+     PUT SKIP(2) LIST('--- LOCATE Mode I/O Demo ---');
+     
+     OPEN FILE(AUDIT_DIRECT) DIRECT UPDATE;
+
+     /* LOCATE mode - direct buffer access without copying */
+     DO I = 1 TO 10;
+       LOOKUP_KEY = 'TXN' || TRIM(I);
+       
+       /* LOCATE provides pointer to buffer - no data copy */
+       LOCATE ARCHIVE_RECORD FILE(AUDIT_DIRECT) KEY(LOOKUP_KEY);
+       
+       /* Modify record directly in buffer */
+       ARCHIVE_RECORD.COMPLIANCE_FLAGS = '1000000000000000'B;
+       ARCHIVE_RECORD.ARCHIVE_STATUS = 'P';  /* Mark as processed */
+       
+       /* No explicit WRITE needed - buffer automatically written back */
+     END;
+
+     CLOSE FILE(AUDIT_DIRECT);
+     
+     PUT SKIP LIST('LOCATE mode updated 10 records (zero-copy)');
+
+   END DEMONSTRATE_LOCATE_MODE;
+
+   /*-----------------------------------------------------------------*/
+   /* Demonstrate BACKWARDS Reading (Reverse chronological scan)      */
+   /*-----------------------------------------------------------------*/
+   DEMONSTRATE_BACKWARDS_READ: PROCEDURE;
+     DECLARE AUDIT_REC CHAR(500);
+     DECLARE COUNT FIXED BIN(15) INIT(0);
+     
+     PUT SKIP(2) LIST('--- BACKWARDS Read Demo ---');
+     
+     ON ENDFILE(AUDIT_LOG) BEGIN;
+       PUT SKIP LIST('Reached beginning of file after ' || 
+                    TRIM(COUNT) || ' records');
+       GOTO BACKWARDS_DONE;
+     END;
+
+     /* Open for BACKWARDS sequential reading */
+     OPEN FILE(AUDIT_LOG) INPUT SEQUENTIAL BACKWARDS;
+
+     /* Read from end to beginning - useful for finding recent transactions */
+     DO WHILE('1'B);
+       READ FILE(AUDIT_LOG) INTO(AUDIT_REC);
+       COUNT = COUNT + 1;
+       
+       /* Process most recent records first */
+       IF COUNT <= 5 THEN
+         PUT SKIP LIST('Recent record ' || TRIM(COUNT) || ': ' || 
+                      SUBSTR(AUDIT_REC, 1, 50));
+       
+       /* Stop after scanning last 100 records */
+       IF COUNT >= 100 THEN LEAVE;
+     END;
+
+   BACKWARDS_DONE:
+     CLOSE FILE(AUDIT_LOG);
+     
+     PUT SKIP LIST('BACKWARDS read scanned ' || TRIM(COUNT) || 
+                  ' records (reverse order)');
+
+   END DEMONSTRATE_BACKWARDS_READ;
+
+   /*-----------------------------------------------------------------*/
+   /* Demonstrate IGNORE Statement (Skip corrupted records)           */
+   /*-----------------------------------------------------------------*/
+   DEMONSTRATE_IGNORE_STATEMENT: PROCEDURE;
+     DECLARE I FIXED BIN(15);
+     
+     PUT SKIP(2) LIST('--- IGNORE Statement Demo ---');
+     
+     ON ENDFILE(AUDIT_DIRECT) GOTO IGNORE_DONE;
+     
+     ON RECORD(AUDIT_DIRECT) BEGIN;
+       /* Record error detected - skip it */
+       CORRUPT_COUNT = CORRUPT_COUNT + 1;
+       IGNORE FILE(AUDIT_DIRECT);  /* Skip this record, continue reading */
+     END;
+
+     OPEN FILE(AUDIT_DIRECT) SEQUENTIAL INPUT;
+
+     /* Scan through file, automatically skipping bad records */
+     DO I = 1 TO 1000;
+       ALLOCATE ARCHIVE_RECORD;
+       
+       READ FILE(AUDIT_DIRECT) INTO(ARCHIVE_RECORD);
+       
+       /* Process only valid records */
+       IF ARCHIVE_RECORD.ARCHIVE_STATUS = 'A' THEN
+         SCAN_COUNT = SCAN_COUNT + 1;
+       ELSE
+         SKIP_COUNT = SKIP_COUNT + 1;
+       
+       FREE ARCHIVE_RECORD;
+     END;
+
+   IGNORE_DONE:
+     CLOSE FILE(AUDIT_DIRECT);
+     
+     PUT SKIP LIST('IGNORE processed archive:');
+     PUT SKIP LIST('  Valid records: ' || TRIM(SCAN_COUNT));
+     PUT SKIP LIST('  Skipped (status): ' || TRIM(SKIP_COUNT));
+     PUT SKIP LIST('  Corrupted (ignored): ' || TRIM(CORRUPT_COUNT));
+
+   END DEMONSTRATE_IGNORE_STATEMENT;
+
+   /*-----------------------------------------------------------------*/
+   /* Generate Compliance Report                                      */
+   /*-----------------------------------------------------------------*/
+   GENERATE_COMPLIANCE_REPORT: PROCEDURE;
+     DECLARE REPORT_LINE CHAR(132);
+     
+     PUT SKIP(2) LIST('=== Regulatory Compliance Report ===');
+     PUT SKIP LIST('Report Date: ' || REGULATORY_SUMMARY.REPORT_DATE);
+     PUT SKIP LIST('Total Transactions: ' || 
+                  TRIM(REGULATORY_SUMMARY.TOTAL_TRANSACTIONS));
+     PUT SKIP LIST('Total Amount: $' || 
+                  TRIM(REGULATORY_SUMMARY.TOTAL_AMOUNT));
+     PUT SKIP LIST('Flagged for Review: ' || 
+                  TRIM(REGULATORY_SUMMARY.FLAGGED_COUNT));
+     PUT SKIP LIST('Suspicious Amount: $' || 
+                  TRIM(REGULATORY_SUMMARY.SUSPICIOUS_AMOUNT));
+
+   END GENERATE_COMPLIANCE_REPORT;
+
+ END BNKARCH;

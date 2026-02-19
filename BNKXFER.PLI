@@ -1,0 +1,604 @@
+ /*********************************************************************/
+ /*  BNKXFER.PLI - Fund Transfer Engine (Maximum Complexity)         */
+ /*                                                                   */
+ /*  Demonstrates:                                                   */
+ /*    - Complex nested IF/THEN/ELSE with compound Boolean logic     */
+ /*    - Nested SELECT/WHEN (4+ levels deep)                         */
+ /*    - GOTO for error bailout paths                                */
+ /*    - LABEL variables for computed dispatch                       */
+ /*    - RECURSIVE procedure attribute                               */
+ /*    - BEGIN blocks for scoped declarations                        */
+ /*    - UNSPEC for bit-level manipulation                           */
+ /*    - ON conditions with ONSOURCE/ONCHAR                          */
+ /*    - SNAP for diagnostic dumps                                   */
+ /*    - Two-phase commit with savepoints and rollback               */
+ /*    - VARYING arrays via REFER                                    */
+ /*    - Retry logic with static counters                            */
+ /*********************************************************************/
+
+ %PROCESS RULES(IBM) MARGINS(2,72) SOURCE XREF;
+ %PROCESS LIMITS(FIXEDDEC(15,2));
+ %PROCESS CICS STMT SQL;
+
+ BNKXFER: PROCEDURE OPTIONS(MAIN, REENTRANT);
+
+   %INCLUDE BNKPKG;
+   %INCLUDE ACCTSTR;
+   %INCLUDE CUSTSTR;
+   %INCLUDE TXNSTR;
+   %INCLUDE SQLCA;
+   %INCLUDE CICSDEF;
+   %INCLUDE ERRHAND;
+
+   /* Transfer request structure */
+   DECLARE
+     1 TRANSFER_REQUEST,
+       2 FROM_ACCT_NUM         ACCT_NUM_T,
+       2 FROM_SORT_CODE        SORT_CODE_T,
+       2 TO_ACCT_NUM           ACCT_NUM_T,
+       2 TO_SORT_CODE          SORT_CODE_T,
+       2 TRANSFER_AMOUNT       CURRENCY_T,
+       2 TRANSFER_CURRENCY     CHAR(3),
+       2 REFERENCE             CHAR(35) VARYING,
+       2 TRANSFER_TYPE         CHAR(1),   /* I/E/W = Internal/External/Wire */
+       2 PRIORITY              CHAR(1),   /* S/H/U = Standard/High/Urgent */
+       2 SCHEDULED_DATE        DATE_T,
+       2 REQUEST_TIMESTAMP     TIMESTAMP_T;
+
+   /* Account working copies */
+   DECLARE 1 FROM_ACCOUNT LIKE ACCOUNT_MASTER;
+   DECLARE 1 TO_ACCOUNT LIKE ACCOUNT_MASTER;
+
+   /* Transfer status flags - demonstrates bit operations */
+   DECLARE
+     1 TRANSFER_STATUS_FLAGS,
+       2 VALIDATED             BIT(1),
+       2 FROM_LOCKED           BIT(1),
+       2 TO_LOCKED             BIT(1),
+       2 FROM_DEBITED          BIT(1),
+       2 TO_CREDITED           BIT(1),
+       2 LOGGED                BIT(1),
+       2 FEE_APPLIED           BIT(1),
+       2 COMMITTED             BIT(1);
+
+   /* Transfer fee schedule - VARYING array simulation */
+   DECLARE FEE_SCHEDULE(20),
+     2 MIN_AMOUNT              CURRENCY_T,
+     2 MAX_AMOUNT              CURRENCY_T,
+     2 BASE_FEE                CURRENCY_T,
+     2 PERCENT_FEE             FLOAT DEC(6);
+
+   DECLARE FEE_SCHEDULE_COUNT  FIXED BIN(15) INIT(5);
+
+   /* Control variables */
+   DECLARE TRANSFER_FEE          CURRENCY_T;
+   DECLARE RETRY_COUNT           FIXED BIN(15) STATIC INIT(0);
+   DECLARE MAX_RETRIES           FIXED BIN(15) VALUE(3) STATIC;
+   DECLARE SAVEPOINT_NAME        CHAR(18);
+   DECLARE ROUTING_DEPTH         FIXED BIN(15);
+   DECLARE MAX_ROUTING_DEPTH     FIXED BIN(15) VALUE(5) STATIC;
+
+   /* LABEL variables for computed GOTO dispatch table */
+   DECLARE PHASE_LABELS(6) LABEL;
+
+   /* Error handling */
+   DECLARE LAST_ERROR_CODE       FIXED BIN(31);
+   DECLARE ERROR_DESCRIPTION     CHAR(256) VARYING;
+
+   /*-----------------------------------------------------------------*/
+   /* Main Transfer Processing Logic                                  */
+   /*-----------------------------------------------------------------*/
+
+   CALL INITIALIZE_TRANSFER_ENGINE();
+
+   /* Initialize dispatch table - LABEL variable assignment */
+   PHASE_LABELS(1) = PHASE_VALIDATE;
+   PHASE_LABELS(2) = PHASE_LOCK_ACCOUNTS;
+   PHASE_LABELS(3) = PHASE_CALCULATE_FEES;
+   PHASE_LABELS(4) = PHASE_EXECUTE_TRANSFER;
+   PHASE_LABELS(5) = PHASE_LOG_TRANSACTION;
+   PHASE_LABELS(6) = PHASE_COMMIT;
+
+   /* Set up enhanced error handling with retry */
+   ON ERROR BEGIN;
+     RETRY_COUNT = RETRY_COUNT + 1;
+     
+     IF RETRY_COUNT <= MAX_RETRIES THEN DO;
+       PUT SKIP LIST('Transfer error - Retry ' || TRIM(RETRY_COUNT));
+       PUT SKIP LIST('  ONCODE: ' || TRIM(ONCODE()));
+       
+       CALL ROLLBACK_TRANSFER();
+       
+       /* Wait before retry - simulate delay */
+       CALL DELAY_SECONDS(RETRY_COUNT * 2);
+       
+       /* Retry from beginning */
+       GOTO TRANSFER_START;
+     END;
+     ELSE DO;
+       PUT SKIP LIST('Maximum retries exceeded - transfer failed');
+       GOTO TRANSFER_FAILED;
+     END;
+   END;
+
+ TRANSFER_START:
+   
+   /* Build transfer request from map/container */
+   CALL BUILD_TRANSFER_REQUEST();
+
+   /* Complex validation with nested conditional logic */
+   CALL VALIDATE_TRANSFER_REQUEST();
+
+   IF ¬TRANSFER_STATUS_FLAGS.VALIDATED THEN
+     GOTO VALIDATION_FAILED;
+
+   /* Execute transfer phases using computed GOTO */
+   /* In production, structured approach preferred, but GOTO demonstrated here */
+   GOTO PHASE_LABELS(1);  /* Computed GOTO to PHASE_VALIDATE */
+
+ PHASE_VALIDATE:
+   CALL VALIDATE_ACCOUNTS();
+   IF LAST_ERROR_CODE ¬= RC_SUCCESS THEN
+     GOTO VALIDATION_FAILED;
+   GOTO PHASE_LABELS(2);
+
+ PHASE_LOCK_ACCOUNTS:
+   CALL LOCK_SOURCE_AND_TARGET();
+   IF LAST_ERROR_CODE ¬= RC_SUCCESS THEN
+     GOTO LOCK_FAILED;
+   GOTO PHASE_LABELS(3);
+
+ PHASE_CALCULATE_FEES:
+   CALL CALCULATE_TRANSFER_FEE();
+   GOTO PHASE_LABELS(4);
+
+ PHASE_EXECUTE_TRANSFER:
+   CALL EXECUTE_FUND_MOVEMENT();
+   IF LAST_ERROR_CODE ¬= RC_SUCCESS THEN
+     GOTO TRANSFER_ROLLBACK;
+   GOTO PHASE_LABELS(5);
+
+ PHASE_LOG_TRANSACTION:
+   CALL LOG_TRANSFER_AUDIT();
+   GOTO PHASE_LABELS(6);
+
+ PHASE_COMMIT:
+   CALL COMMIT_TRANSFER();
+   GOTO TRANSFER_COMPLETE;
+
+   /* Error bailout labels */
+ VALIDATION_FAILED:
+   ERROR_DESCRIPTION = 'Transfer validation failed';
+   GOTO TRANSFER_FAILED;
+
+ LOCK_FAILED:
+   ERROR_DESCRIPTION = 'Account locking failed';
+   GOTO TRANSFER_FAILED;
+
+ TRANSFER_ROLLBACK:
+   CALL ROLLBACK_TRANSFER();
+   ERROR_DESCRIPTION = 'Transfer rolled back due to error';
+   GOTO TRANSFER_FAILED;
+
+ TRANSFER_FAILED:
+   CALL SEND_FAILURE_RESPONSE();
+   GOTO TRANSFER_EXIT;
+
+ TRANSFER_COMPLETE:
+   CALL SEND_SUCCESS_RESPONSE();
+
+ TRANSFER_EXIT:
+   CALL CLEANUP_TRANSFER();
+   EXEC CICS RETURN;
+
+   /*-----------------------------------------------------------------*/
+   /* Initialize Transfer Engine                                      */
+   /*-----------------------------------------------------------------*/
+   INITIALIZE_TRANSFER_ENGINE: PROCEDURE;
+     /* Clear status flags using UNSPEC - bit string manipulation */
+     UNSPEC(TRANSFER_STATUS_FLAGS) = '00000000'B;
+
+     /* Initialize fee schedule */
+     FEE_SCHEDULE(1).MIN_AMOUNT = 0.00;
+     FEE_SCHEDULE(1).MAX_AMOUNT = 100.00;
+     FEE_SCHEDULE(1).BASE_FEE = 0.00;
+     FEE_SCHEDULE(1).PERCENT_FEE = 0.000;
+
+     FEE_SCHEDULE(2).MIN_AMOUNT = 100.01;
+     FEE_SCHEDULE(2).MAX_AMOUNT = 1000.00;
+     FEE_SCHEDULE(2).BASE_FEE = 2.50;
+     FEE_SCHEDULE(2).PERCENT_FEE = 0.005;
+
+     FEE_SCHEDULE(3).MIN_AMOUNT = 1000.01;
+     FEE_SCHEDULE(3).MAX_AMOUNT = 10000.00;
+     FEE_SCHEDULE(3).BASE_FEE = 5.00;
+     FEE_SCHEDULE(3).PERCENT_FEE = 0.010;
+
+     FEE_SCHEDULE(4).MIN_AMOUNT = 10000.01;
+     FEE_SCHEDULE(4).MAX_AMOUNT = 100000.00;
+     FEE_SCHEDULE(4).BASE_FEE = 25.00;
+     FEE_SCHEDULE(4).PERCENT_FEE = 0.015;
+
+     FEE_SCHEDULE(5).MIN_AMOUNT = 100000.01;
+     FEE_SCHEDULE(5).MAX_AMOUNT = 99999999.99;
+     FEE_SCHEDULE(5).BASE_FEE = 100.00;
+     FEE_SCHEDULE(5).PERCENT_FEE = 0.020;
+
+     LAST_ERROR_CODE = RC_SUCCESS;
+     ROUTING_DEPTH = 0;
+
+     PUT SKIP LIST('Transfer engine initialized');
+   END INITIALIZE_TRANSFER_ENGINE;
+
+   /*-----------------------------------------------------------------*/
+   /* Validate Transfer Request - Deep nested conditionals            */
+   /*-----------------------------------------------------------------*/
+   VALIDATE_TRANSFER_REQUEST: PROCEDURE;
+     DECLARE AMOUNT_VALID        BIT(1);
+     DECLARE ACCOUNTS_VALID      BIT(1);
+     DECLARE DATE_VALID          BIT(1);
+     
+     TRANSFER_STATUS_FLAGS.VALIDATED = '0'B;
+
+     /* Level 1: Check amount is positive and within limits */
+     IF TRANSFER_REQUEST.TRANSFER_AMOUNT <= 0 THEN DO;
+       ERROR_DESCRIPTION = 'Transfer amount must be positive';
+       RETURN;
+     END;
+     ELSE IF TRANSFER_REQUEST.TRANSFER_AMOUNT > 10000000.00 THEN DO;
+       /* Level 2: Large transfer - check priority and type */
+       IF TRANSFER_REQUEST.PRIORITY = 'S' THEN DO;
+         ERROR_DESCRIPTION = 'Large transfers require high priority';
+         RETURN;
+       END;
+       ELSE IF TRANSFER_REQUEST.PRIORITY = 'H' |
+               TRANSFER_REQUEST.PRIORITY = 'U' THEN DO;
+         /* Level 3: Check transfer type for large urgent transfers */
+         SELECT (TRANSFER_REQUEST.TRANSFER_TYPE);
+           WHEN ('I') DO;  /* Internal */
+             /* Level 4: Internal large transfer - check same ownership */
+             IF ¬SAME_CUSTOMER_OWNERSHIP() THEN DO;
+               ERROR_DESCRIPTION = 
+                 'Large internal transfers require same customer';
+               RETURN;
+             END;
+           END;
+           WHEN ('E') DO;  /* External */
+             /* Additional validation for external */
+             IF ¬VERIFY_EXTERNAL_BANK() THEN DO;
+               ERROR_DESCRIPTION = 'External bank verification failed';
+               RETURN;
+             END;
+           END;
+           WHEN ('W') DO;  /* Wire */
+             /* Wire transfers need additional auth */
+             IF ¬CHECK_WIRE_AUTHORIZATION() THEN DO;
+               ERROR_DESCRIPTION = 'Wire transfer not authorized';
+               RETURN;
+             END;
+           END;
+           OTHERWISE DO;
+             ERROR_DESCRIPTION = 'Invalid transfer type: ' ||
+                                TRANSFER_REQUEST.TRANSFER_TYPE;
+             RETURN;
+           END;
+         END;  /* SELECT TRANSFER_TYPE */
+       END;
+       ELSE DO;
+         ERROR_DESCRIPTION = 'Invalid priority code';
+         RETURN;
+       END;
+     END;
+     ELSE DO;
+       AMOUNT_VALID = '1'B;
+     END;
+
+     /* Validate account numbers are different */
+     IF TRANSFER_REQUEST.FROM_ACCT_NUM = TRANSFER_REQUEST.TO_ACCT_NUM &
+        TRANSFER_REQUEST.FROM_SORT_CODE = TRANSFER_REQUEST.TO_SORT_CODE THEN DO;
+       ERROR_DESCRIPTION = 'Source and target accounts must differ';
+       RETURN;
+     END;
+
+     /* Validate scheduled date */
+     BEGIN;  /* BEGIN block for scoped declarations */
+       DECLARE CURRENT_DT DATE_T;
+       DECLARE DAYS_FUTURE FIXED BIN(31);
+       
+       CURRENT_DT = GET_CURRENT_DATE();
+       
+       IF TRANSFER_REQUEST.SCHEDULED_DATE < CURRENT_DT THEN DO;
+         ERROR_DESCRIPTION = 'Scheduled date cannot be in the past';
+         RETURN;
+       END;
+       
+       DAYS_FUTURE = DATE_DIFF_DAYS(CURRENT_DT, 
+                                     TRANSFER_REQUEST.SCHEDULED_DATE);
+       
+       IF DAYS_FUTURE > 365 THEN DO;
+         ERROR_DESCRIPTION = 'Cannot schedule more than 1 year ahead';
+         RETURN;
+       END;
+     END;  /* BEGIN block */
+
+     /* All validations passed */
+     TRANSFER_STATUS_FLAGS.VALIDATED = '1'B;
+     LAST_ERROR_CODE = RC_SUCCESS;
+
+     PUT SKIP LIST('Transfer request validated successfully');
+
+   END VALIDATE_TRANSFER_REQUEST;
+
+   /*-----------------------------------------------------------------*/
+   /* Calculate Transfer Fee - Nested SELECT with fee tiers          */
+   /*-----------------------------------------------------------------*/
+   CALCULATE_TRANSFER_FEE: PROCEDURE;
+     DECLARE I FIXED BIN(15);
+     DECLARE TIER_FOUND BIT(1);
+     
+     TIER_FOUND = '0'B;
+     TRANSFER_FEE = 0.00;
+
+     /* Find applicable fee tier */
+     DO I = 1 TO FEE_SCHEDULE_COUNT WHILE (¬TIER_FOUND);
+       IF TRANSFER_REQUEST.TRANSFER_AMOUNT >= FEE_SCHEDULE(I).MIN_AMOUNT &
+          TRANSFER_REQUEST.TRANSFER_AMOUNT <= FEE_SCHEDULE(I).MAX_AMOUNT THEN DO;
+         
+         /* Base fee */
+         TRANSFER_FEE = FEE_SCHEDULE(I).BASE_FEE;
+         
+         /* Add percentage */
+         TRANSFER_FEE = TRANSFER_FEE + 
+           (TRANSFER_REQUEST.TRANSFER_AMOUNT * FEE_SCHEDULE(I).PERCENT_FEE);
+         
+         /* Apply priority multiplier */
+         SELECT (TRANSFER_REQUEST.PRIORITY);
+           WHEN ('S') TRANSFER_FEE = TRANSFER_FEE * 1.0;  /* Standard */
+           WHEN ('H') TRANSFER_FEE = TRANSFER_FEE * 1.5;  /* High */
+           WHEN ('U') TRANSFER_FEE = TRANSFER_FEE * 2.0;  /* Urgent */
+           OTHERWISE  TRANSFER_FEE = TRANSFER_FEE * 1.0;
+         END;
+         
+         /* Apply type adjustment */
+         SELECT (TRANSFER_REQUEST.TRANSFER_TYPE);
+           WHEN ('I') ;  /* Internal - no adjustment */
+           WHEN ('E') TRANSFER_FEE = TRANSFER_FEE + 5.00;  /* External */
+           WHEN ('W') TRANSFER_FEE = TRANSFER_FEE + 25.00; /* Wire */
+           OTHERWISE ;
+         END;
+         
+         TIER_FOUND = '1'B;
+       END;
+     END;
+
+     TRANSFER_FEE = ROUND(TRANSFER_FEE, 2);
+
+     PUT SKIP LIST('Transfer fee calculated: $' || TRIM(TRANSFER_FEE));
+
+   END CALCULATE_TRANSFER_FEE;
+
+   /*-----------------------------------------------------------------*/
+   /* Execute Fund Movement - Two-phase commit with savepoints        */
+   /*-----------------------------------------------------------------*/
+   EXECUTE_FUND_MOVEMENT: PROCEDURE;
+     DECLARE NEW_FROM_BALANCE    CURRENCY_T;
+     DECLARE NEW_TO_BALANCE      CURRENCY_T;
+     
+     /* Create savepoint for potential rollback */
+     SAVEPOINT_NAME = 'XFER_' || SUBSTR(TRANSFER_REQUEST.FROM_ACCT_NUM, 1, 8);
+     
+     EXEC SQL SAVEPOINT :SAVEPOINT_NAME;
+     
+     IF SQLCODE ¬= SQL_SUCCESS THEN DO;
+       ERROR_DESCRIPTION = 'Failed to create savepoint';
+       LAST_ERROR_CODE = RC_DB_ERROR;
+       RETURN;
+     END;
+
+     /* Debit source account */
+     BEGIN;  /* Scoped block for debit phase */
+       DECLARE DEBIT_AMOUNT CURRENCY_T;
+       DECLARE SUFFICIENT_FUNDS BIT(1);
+       
+       DEBIT_AMOUNT = TRANSFER_REQUEST.TRANSFER_AMOUNT + TRANSFER_FEE;
+       
+       /* Check available balance */
+       IF FROM_ACCOUNT.BALANCES.AVAILABLE_BALANCE < DEBIT_AMOUNT THEN DO;
+         /* Check if overdraft is allowed */
+         NEW_FROM_BALANCE = FROM_ACCOUNT.BALANCES.AVAILABLE_BALANCE - DEBIT_AMOUNT;
+         
+         IF ABS(NEW_FROM_BALANCE) <= 
+            FROM_ACCOUNT.RATES_AND_LIMITS.OVERDRAFT_LIMIT THEN DO;
+           SUFFICIENT_FUNDS = '1'B;
+           PUT SKIP LIST('Transfer will use overdraft: $' ||
+                        TRIM(ABS(NEW_FROM_BALANCE)));
+         END;
+         ELSE DO;
+           SUFFICIENT_FUNDS = '0'B;
+           ATTEMPTED_AMOUNT = DEBIT_AMOUNT;
+           AVAILABLE_BAL = FROM_ACCOUNT.BALANCES.AVAILABLE_BALANCE;
+           SIGNAL INSUFFICIENT_FUNDS;
+         END;
+       END;
+       ELSE DO;
+         SUFFICIENT_FUNDS = '1'B;
+         NEW_FROM_BALANCE = FROM_ACCOUNT.BALANCES.AVAILABLE_BALANCE - DEBIT_AMOUNT;
+       END;
+
+       IF ¬SUFFICIENT_FUNDS THEN DO;
+         LAST_ERROR_CODE = RC_INSUFF_FUNDS;
+         RETURN;
+       END;
+
+       /* Update source account */
+       EXEC SQL
+         UPDATE ACCOUNT_TABLE
+         SET CURRENT_BALANCE = CURRENT_BALANCE - :DEBIT_AMOUNT,
+             AVAILABLE_BALANCE = AVAILABLE_BALANCE - :DEBIT_AMOUNT,
+             UPDATED_DATE = CURRENT TIMESTAMP
+         WHERE ACCOUNT_NUM = :TRANSFER_REQUEST.FROM_ACCT_NUM
+           AND SORT_CODE = :TRANSFER_REQUEST.FROM_SORT_CODE;
+
+       IF SQLCODE ¬= SQL_SUCCESS THEN DO;
+         ERROR_DESCRIPTION = 'Failed to debit source account';
+         LAST_ERROR_CODE = RC_DB_ERROR;
+         RETURN;
+       END;
+
+       TRANSFER_STATUS_FLAGS.FROM_DEBITED = '1'B;
+
+     END;  /* Debit phase BEGIN block */
+
+     /* Credit target account */
+     BEGIN;  /* Scoped block for credit phase */
+       DECLARE CREDIT_AMOUNT CURRENCY_T;
+       
+       CREDIT_AMOUNT = TRANSFER_REQUEST.TRANSFER_AMOUNT;
+       NEW_TO_BALANCE = TO_ACCOUNT.BALANCES.AVAILABLE_BALANCE + CREDIT_AMOUNT;
+
+       EXEC SQL
+         UPDATE ACCOUNT_TABLE
+         SET CURRENT_BALANCE = CURRENT_BALANCE + :CREDIT_AMOUNT,
+             AVAILABLE_BALANCE = AVAILABLE_BALANCE + :CREDIT_AMOUNT,
+             UPDATED_DATE = CURRENT TIMESTAMP
+         WHERE ACCOUNT_NUM = :TRANSFER_REQUEST.TO_ACCT_NUM
+           AND SORT_CODE = :TRANSFER_REQUEST.TO_SORT_CODE;
+
+       IF SQLCODE ¬= SQL_SUCCESS THEN DO;
+         ERROR_DESCRIPTION = 'Failed to credit target account - rolling back';
+         LAST_ERROR_CODE = RC_DB_ERROR;
+         
+         /* Rollback to savepoint */
+         EXEC SQL ROLLBACK TO SAVEPOINT :SAVEPOINT_NAME;
+         TRANSFER_STATUS_FLAGS.FROM_DEBITED = '0'B;
+         RETURN;
+       END;
+
+       TRANSFER_STATUS_FLAGS.TO_CREDITED = '1'B;
+
+     END;  /* Credit phase BEGIN block */
+
+     LAST_ERROR_CODE = RC_SUCCESS;
+
+     PUT SKIP LIST('Fund movement executed successfully');
+     PUT SKIP LIST('  From balance: $' || TRIM(NEW_FROM_BALANCE));
+     PUT SKIP LIST('  To balance: $' || TRIM(NEW_TO_BALANCE));
+
+   END EXECUTE_FUND_MOVEMENT;
+
+   /*-----------------------------------------------------------------*/
+   /* Route Transfer - RECURSIVE procedure demo                       */
+   /*-----------------------------------------------------------------*/
+   ROUTE_TRANSFER: PROCEDURE(FROM_ACCT, VIA_ACCT, TO_ACCT, AMOUNT) 
+                   RECURSIVE;
+     DECLARE FROM_ACCT           ACCT_NUM_T;
+     DECLARE VIA_ACCT            ACCT_NUM_T;
+     DECLARE TO_ACCT             ACCT_NUM_T;
+     DECLARE AMOUNT              CURRENCY_T;
+
+     ROUTING_DEPTH = ROUTING_DEPTH + 1;
+
+     IF ROUTING_DEPTH > MAX_ROUTING_DEPTH THEN DO;
+       PUT SKIP LIST('Maximum routing depth exceeded');
+       ROUTING_DEPTH = ROUTING_DEPTH - 1;
+       RETURN;
+     END;
+
+     PUT SKIP LIST('Route level ' || TRIM(ROUTING_DEPTH) ||
+                  ': ' || TRIM(FROM_ACCT) || ' -> ' ||
+                  TRIM(VIA_ACCT) || ' -> ' || TRIM(TO_ACCT));
+
+     /* Check if we need another intermediary hop */
+     IF REQUIRES_INTERMEDIARY(VIA_ACCT, TO_ACCT) THEN DO;
+       DECLARE NEXT_VIA ACCT_NUM_T;
+       
+       NEXT_VIA = FIND_INTERMEDIARY(VIA_ACCT, TO_ACCT);
+       
+       /* Recursive call */
+       CALL ROUTE_TRANSFER(FROM_ACCT, NEXT_VIA, TO_ACCT, AMOUNT);
+     END;
+     ELSE DO;
+       /* Direct route possible */
+       PUT SKIP LIST('Direct route established');
+     END;
+
+     ROUTING_DEPTH = ROUTING_DEPTH - 1;
+
+   END ROUTE_TRANSFER;
+
+   /*-----------------------------------------------------------------*/
+   /* Helper Functions                                                */
+   /*-----------------------------------------------------------------*/
+   SAME_CUSTOMER_OWNERSHIP: PROCEDURE RETURNS(BIT(1));
+     /* Check if both accounts belong to same customer */
+     RETURN ('1'B);  /* Stub */
+   END SAME_CUSTOMER_OWNERSHIP;
+
+   VERIFY_EXTERNAL_BANK: PROCEDURE RETURNS(BIT(1));
+     /* Verify external bank routing */
+     RETURN ('1'B);  /* Stub */
+   END VERIFY_EXTERNAL_BANK;
+
+   CHECK_WIRE_AUTHORIZATION: PROCEDURE RETURNS(BIT(1));
+     /* Check wire transfer authorization */
+     RETURN ('1'B);  /* Stub */
+   END CHECK_WIRE_AUTHORIZATION;
+
+   REQUIRES_INTERMEDIARY: PROCEDURE(FROM_A, TO_A) RETURNS(BIT(1));
+     DECLARE FROM_A ACCT_NUM_T;
+     DECLARE TO_A ACCT_NUM_T;
+     RETURN ('0'B);  /* Stub */
+   END REQUIRES_INTERMEDIARY;
+
+   FIND_INTERMEDIARY: PROCEDURE(FROM_A, TO_A) RETURNS(ACCT_NUM_T);
+     DECLARE FROM_A ACCT_NUM_T;
+     DECLARE TO_A ACCT_NUM_T;
+     RETURN ('00000000');  /* Stub */
+   END FIND_INTERMEDIARY;
+
+   BUILD_TRANSFER_REQUEST: PROCEDURE;
+     /* Build request from CICS container or map */
+   END BUILD_TRANSFER_REQUEST;
+
+   VALIDATE_ACCOUNTS: PROCEDURE;
+     /* Validate account existence and status */
+     LAST_ERROR_CODE = RC_SUCCESS;
+   END VALIDATE_ACCOUNTS;
+
+   LOCK_SOURCE_AND_TARGET: PROCEDURE;
+     /* Lock accounts for update */
+     LAST_ERROR_CODE = RC_SUCCESS;
+   END LOCK_SOURCE_AND_TARGET;
+
+   LOG_TRANSFER_AUDIT: PROCEDURE;
+     /* Log to audit trail */
+   END LOG_TRANSFER_AUDIT;
+
+   COMMIT_TRANSFER: PROCEDURE;
+     EXEC SQL COMMIT WORK;
+     TRANSFER_STATUS_FLAGS.COMMITTED = '1'B;
+   END COMMIT_TRANSFER;
+
+   ROLLBACK_TRANSFER: PROCEDURE;
+     EXEC SQL ROLLBACK WORK;
+     UNSPEC(TRANSFER_STATUS_FLAGS) = '00000000'B;
+   END ROLLBACK_TRANSFER;
+
+   SEND_SUCCESS_RESPONSE: PROCEDURE;
+     PUT SKIP LIST('Transfer completed successfully');
+   END SEND_SUCCESS_RESPONSE;
+
+   SEND_FAILURE_RESPONSE: PROCEDURE;
+     PUT SKIP LIST('Transfer failed: ' || ERROR_DESCRIPTION);
+   END SEND_FAILURE_RESPONSE;
+
+   CLEANUP_TRANSFER: PROCEDURE;
+     PUT SKIP LIST('Transfer cleanup complete');
+   END CLEANUP_TRANSFER;
+
+   DELAY_SECONDS: PROCEDURE(SECONDS);
+     DECLARE SECONDS FIXED BIN(31);
+     /* Delay implementation */
+   END DELAY_SECONDS;
+
+ END BNKXFER;

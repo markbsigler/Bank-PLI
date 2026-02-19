@@ -1,0 +1,378 @@
+ /*********************************************************************/
+ /*  BNKMAIN.PLI - Main Banking System Dispatcher                    */
+ /*                                                                   */
+ /*  Demonstrates:                                                   */
+ /*    - %PROCESS compiler directives                                */
+ /*    - %INCLUDE for all copylib members                            */
+ /*    - PROCEDURE OPTIONS(MAIN, REENTRANT)                          */
+ /*    - Multiple ENTRY points for different CICS transactions       */
+ /*    - EXEC CICS program dispatch                                  */
+ /*    - STATIC configuration tables                                 */
+ /*    - Conditional compilation with %IF                            */
+ /*    - EXTERNAL procedure references                               */
+ /*********************************************************************/
+
+ %PROCESS RULES(IBM) MARGINS(2,72) SOURCE XREF;
+ %PROCESS LIMITS(FIXEDDEC(15,2));
+ %PROCESS LIST MAP SELECT OFFSET;
+ %PROCESS CICS STMT SQL;
+ %PROCESS AGGREGATE ATTRIBUTESLANGLVL(SAA2);
+ %PROCESS LIMITS(NAME(31)) LIMITS(EXTNAME(31));
+
+ /* Conditional compilation for debug builds */
+ %DECLARE PRODUCTION BIT(1) VALUE('0'B);
+
+ %IF ¬PRODUCTION %THEN %DO;
+   %PROCESS STMT SOURCE XREF AGGREGATE;
+   %ACTIVATE STRINGRANGE, SUBSCRIPTRANGE;
+ %END;
+
+ BNKMAIN: PROCEDURE OPTIONS(MAIN, REENTRANT) REORDER;
+
+   /*-----------------------------------------------------------------*/
+   /* Include all package and copybook definitions                   */
+   /*-----------------------------------------------------------------*/
+   %INCLUDE BNKPKG;
+   %INCLUDE CUSTSTR;
+   %INCLUDE ACCTSTR;
+   %INCLUDE TXNSTR;
+   %INCLUDE SQLCA;
+   %INCLUDE CICSDEF;
+   %INCLUDE ERRHAND;
+
+   /*-----------------------------------------------------------------*/
+   /* Transaction Routing Table - STATIC configuration                */
+   /*-----------------------------------------------------------------*/
+   DECLARE TRANSACTION_TABLE(10),
+     2 TXN_ID                CHAR(4),
+     2 PROGRAM_NAME          CHAR(8),
+     2 FUNCTION_CODE         CHAR(1),
+     2 DESCRIPTION           CHAR(40) VARYING;
+
+   DECLARE TXN_TABLE_SIZE    FIXED BIN(15) STATIC INIT(6);
+
+   /*-----------------------------------------------------------------*/
+   /* Global application state                                        */
+   /*-----------------------------------------------------------------*/
+   DECLARE CURRENT_USER        CHAR(8) STATIC;
+   DECLARE CURRENT_TERMINAL    CHAR(4) STATIC;
+   DECLARE SESSION_START       TIMESTAMP_T STATIC;
+   DECLARE REQUEST_COUNT       FIXED BIN(31) STATIC INIT(0);
+
+   /*-----------------------------------------------------------------*/
+   /* Main Entry Point - CICS Transaction Dispatcher                  */
+   /*-----------------------------------------------------------------*/
+
+   CALL INITIALIZE_MAIN_MODULE();
+
+   /* Get CICS context */
+   EXEC CICS ASSIGN
+     USERID(CURRENT_USER)
+     TERMID(CURRENT_TERMINAL);
+
+   REQUEST_COUNT = REQUEST_COUNT + 1;
+
+   PUT SKIP LIST('BNKMAIN Entry - User: ' || TRIM(CURRENT_USER) ||
+                ' Terminal: ' || TRIM(CURRENT_TERMINAL) ||
+                ' Request #: ' || TRIM(REQUEST_COUNT));
+
+   /* Dispatch based on transaction ID */
+   SELECT (EIBTRNID);
+     
+     WHEN (CUST_TXN_ID) DO;
+       PUT SKIP LIST('Dispatching to Customer Management');
+       EXEC CICS LINK
+         PROGRAM(BNKCUST_PGM)
+         RESP(EIBRESP)
+         RESP2(EIBRESP2);
+     END;
+
+     WHEN (ACCT_TXN_ID) DO;
+       PUT SKIP LIST('Dispatching to Account Management');
+       EXEC CICS LINK
+         PROGRAM(BNKACCT_PGM)
+         RESP(EIBRESP)
+         RESP2(EIBRESP2);
+     END;
+
+     WHEN (XFER_TXN_ID) DO;
+       PUT SKIP LIST('Dispatching to Fund Transfer');
+       EXEC CICS LINK
+         PROGRAM(BNKXFER_PGM)
+         RESP(EIBRESP)
+         RESP2(EIBRESP2);
+     END;
+
+     WHEN (MENU_TXN_ID) DO;
+       PUT SKIP LIST('Displaying main menu');
+       CALL DISPLAY_MAIN_MENU();
+     END;
+
+     WHEN (BTCH_TXN_ID) DO;
+       PUT SKIP LIST('Batch processing requested');
+       EXEC CICS LINK
+         PROGRAM(BNKBATCH_PGM)
+         RESP(EIBRESP)
+         RESP2(EIBRESP2);
+     END;
+
+     OTHERWISE DO;
+       PUT SKIP LIST('Unknown transaction: ' || EIBTRNID);
+       CALL DISPLAY_ERROR('Invalid transaction ID');
+     END;
+   END;
+
+   /* Check link response */
+   IF EIBRESP ¬= DFHRESP_NORMAL THEN DO;
+     PUT SKIP LIST('Link failed - RESP: ' || TRIM(EIBRESP) ||
+                  ' RESP2: ' || TRIM(EIBRESP2));
+     CALL DISPLAY_ERROR('Program link failed');
+   END;
+
+   EXEC CICS RETURN;
+
+   /*-----------------------------------------------------------------*/
+   /* Alternate Entry Point - Batch Initialization                    */
+   /*-----------------------------------------------------------------*/
+   BATCH_INIT: ENTRY;
+
+     CALL INITIALIZE_MAIN_MODULE();
+     
+     PUT SKIP LIST('=== BATCH MODE INITIALIZATION ===');
+     PUT SKIP LIST('Initializing banking system for batch processing');
+
+     /* Initialize database connection */
+     EXEC SQL CONNECT TO 'BANKDB';
+     
+     IF SQLCODE ¬= SQL_SUCCESS THEN DO;
+       PUT SKIP LIST('Database connection failed: ' || TRIM(SQLCODE));
+       RETURN;
+     END;
+
+     PUT SKIP LIST('Batch initialization complete');
+     
+     RETURN;
+
+   /*-----------------------------------------------------------------*/
+   /* Alternate Entry Point - COBOL Interoperability                  */
+   /*-----------------------------------------------------------------*/
+   COBOL_ENTRY: ENTRY(COBOL_PARM_AREA) OPTIONS(COBOL);
+
+     DECLARE COBOL_PARM_AREA CHAR(200);
+     
+     PUT SKIP LIST('=== COBOL INTERFACE ENTRY ===');
+     PUT SKIP LIST('Parameter from COBOL: ' || TRIM(COBOL_PARM_AREA));
+     
+     /* Convert COBOL linkage section to PL/I processing */
+     CALL PROCESS_COBOL_REQUEST(COBOL_PARM_AREA);
+     
+     PUT SKIP LIST('COBOL request processed');
+     
+     RETURN;
+
+   /*-----------------------------------------------------------------*/
+   /* Alternate Entry Point - System Diagnostics                      */
+   /*-----------------------------------------------------------------*/
+   SYSTEM_DIAG: ENTRY;
+
+     PUT SKIP(2) LIST('=== BANKING SYSTEM DIAGNOSTICS ===');
+     PUT SKIP LIST('');
+     
+     CALL PRINT_SYSTEM_STATUS();
+     CALL PRINT_CONFIGURATION();
+     CALL PRINT_STATISTICS();
+     
+     PUT SKIP(2) LIST('=== END DIAGNOSTICS ===');
+     
+     RETURN;
+
+   /*-----------------------------------------------------------------*/
+   /* Initialize Main Module                                          */
+   /*-----------------------------------------------------------------*/
+   INITIALIZE_MAIN_MODULE: PROCEDURE;
+     
+     IF SESSION_START = '' THEN DO;
+       SESSION_START = GET_CURRENT_TIMESTAMP();
+       
+       /* Initialize transaction routing table */
+       TRANSACTION_TABLE(1).TXN_ID = CUST_TXN_ID;
+       TRANSACTION_TABLE(1).PROGRAM_NAME = BNKCUST_PGM;
+       TRANSACTION_TABLE(1).FUNCTION_CODE = 'C';
+       TRANSACTION_TABLE(1).DESCRIPTION = 'Customer Management';
+
+       TRANSACTION_TABLE(2).TXN_ID = ACCT_TXN_ID;
+       TRANSACTION_TABLE(2).PROGRAM_NAME = BNKACCT_PGM;
+       TRANSACTION_TABLE(2).FUNCTION_CODE = 'A';
+       TRANSACTION_TABLE(2).DESCRIPTION = 'Account Management';
+
+       TRANSACTION_TABLE(3).TXN_ID = XFER_TXN_ID;
+       TRANSACTION_TABLE(3).PROGRAM_NAME = BNKXFER_PGM;
+       TRANSACTION_TABLE(3).FUNCTION_CODE = 'X';
+       TRANSACTION_TABLE(3).DESCRIPTION = 'Fund Transfer';
+
+       TRANSACTION_TABLE(4).TXN_ID = MENU_TXN_ID;
+       TRANSACTION_TABLE(4).PROGRAM_NAME = 'BNKMAIN';
+       TRANSACTION_TABLE(4).FUNCTION_CODE = 'M';
+       TRANSACTION_TABLE(4).DESCRIPTION = 'Main Menu';
+
+       TRANSACTION_TABLE(5).TXN_ID = BTCH_TXN_ID;
+       TRANSACTION_TABLE(5).PROGRAM_NAME = BNKBATCH_PGM;
+       TRANSACTION_TABLE(5).FUNCTION_CODE = 'B';
+       TRANSACTION_TABLE(5).DESCRIPTION = 'Batch Processing';
+
+       TRANSACTION_TABLE(6).TXN_ID = '    ';
+       TRANSACTION_TABLE(6).PROGRAM_NAME = 'BNKCREDT';
+       TRANSACTION_TABLE(6).FUNCTION_CODE = 'S';
+       TRANSACTION_TABLE(6).DESCRIPTION = 'Credit Scoring';
+
+       PUT SKIP LIST('BNKMAIN module initialized');
+       PUT SKIP LIST('Session start: ' || SESSION_START);
+     END;
+
+   END INITIALIZE_MAIN_MODULE;
+
+   /*-----------------------------------------------------------------*/
+   /* Display Main Menu                                               */
+   /*-----------------------------------------------------------------*/
+   DISPLAY_MAIN_MENU: PROCEDURE;
+     DECLARE I FIXED BIN(15);
+     
+     PUT SKIP(2);
+     PUT SKIP LIST('=================================================');
+     PUT SKIP LIST('        BANKING SYSTEM MAIN MENU');
+     PUT SKIP LIST('=================================================');
+     PUT SKIP LIST('');
+     
+     PUT SKIP LIST('Available Transactions:');
+     PUT SKIP LIST('');
+
+     DO I = 1 TO TXN_TABLE_SIZE;
+       IF TRANSACTION_TABLE(I).TXN_ID ¬= '    ' THEN
+         PUT SKIP LIST('  ' || TRANSACTION_TABLE(I).TXN_ID ||
+                      ' - ' || TRANSACTION_TABLE(I).DESCRIPTION);
+     END;
+
+     PUT SKIP LIST('');
+     PUT SKIP LIST('=================================================');
+     PUT SKIP LIST('');
+
+     /* In real CICS, would send formatted map here */
+     
+   END DISPLAY_MAIN_MENU;
+
+   /*-----------------------------------------------------------------*/
+   /* Print System Status                                             */
+   /*-----------------------------------------------------------------*/
+   PRINT_SYSTEM_STATUS: PROCEDURE;
+     DECLARE UPTIME_SECONDS  FIXED BIN(31);
+     DECLARE CURRENT_TS      TIMESTAMP_T;
+
+     CURRENT_TS = GET_CURRENT_TIMESTAMP();
+     
+     PUT SKIP LIST('System Status:');
+     PUT SKIP LIST('  Session started: ' || SESSION_START);
+     PUT SKIP LIST('  Current time: ' || CURRENT_TS);
+     PUT SKIP LIST('  Total requests: ' || TRIM(REQUEST_COUNT));
+     
+     IF CURRENT_USER ¬= '' THEN
+       PUT SKIP LIST('  Current user: ' || TRIM(CURRENT_USER));
+     
+     IF CURRENT_TERMINAL ¬= '' THEN
+       PUT SKIP LIST('  Current terminal: ' || TRIM(CURRENT_TERMINAL));
+
+   END PRINT_SYSTEM_STATUS;
+
+   /*-----------------------------------------------------------------*/
+   /* Print Configuration                                             */
+   /*-----------------------------------------------------------------*/
+   PRINT_CONFIGURATION: PROCEDURE;
+     DECLARE I FIXED BIN(15);
+
+     PUT SKIP(2) LIST('System Configuration:');
+     PUT SKIP LIST('  Sort code: ' || SYSTEM_SORT_CODE);
+     PUT SKIP LIST('  Max accounts: ' || TRIM(MAX_ACCOUNTS));
+     PUT SKIP LIST('  Max customers: ' || TRIM(MAX_CUSTOMERS));
+     PUT SKIP LIST('  Max daily transfers: ' || 
+                   TRIM(MAX_DAILY_TRANSFERS));
+
+     PUT SKIP(2) LIST('Interest Rates by Account Type:');
+     DO I = LBOUND(INTEREST_RATES) TO HBOUND(INTEREST_RATES);
+       PUT SKIP LIST('  Type ' || TRIM(I) || ': ' ||
+                    TRIM(INTEREST_RATES(I) * 100) || '%');
+     END;
+
+     PUT SKIP(2) LIST('Transaction Routing Table:');
+     DO I = 1 TO TXN_TABLE_SIZE;
+       IF TRANSACTION_TABLE(I).TXN_ID ¬= '    ' THEN
+         PUT SKIP LIST('  ' || TRANSACTION_TABLE(I).TXN_ID ||
+                      ' -> ' || TRIM(TRANSACTION_TABLE(I).PROGRAM_NAME) ||
+                      ' (' || TRANSACTION_TABLE(I).DESCRIPTION || ')');
+     END;
+
+   END PRINT_CONFIGURATION;
+
+   /*-----------------------------------------------------------------*/
+   /* Print Statistics                                                */
+   /*-----------------------------------------------------------------*/
+   PRINT_STATISTICS: PROCEDURE;
+     
+     PUT SKIP(2) LIST('Runtime Statistics:');
+     PUT SKIP LIST('  Total requests processed: ' || TRIM(REQUEST_COUNT));
+     
+     /* Additional statistics would come from other modules */
+     PUT SKIP LIST('  Credit scoring requests: ' || TRIM(TOTAL_REQUESTS));
+     PUT SKIP LIST('  Credit approvals: ' || TRIM(TOTAL_APPROVALS));
+     PUT SKIP LIST('  Credit denials: ' || TRIM(TOTAL_DENIALS));
+
+   END PRINT_STATISTICS;
+
+   /*-----------------------------------------------------------------*/
+   /* Display Error                                                   */
+   /*-----------------------------------------------------------------*/
+   DISPLAY_ERROR: PROCEDURE(ERROR_MSG);
+     DECLARE ERROR_MSG CHAR(*) VARYING;
+
+     PUT SKIP LIST('*** ERROR ***');
+     PUT SKIP LIST(ERROR_MSG);
+     
+     /* In real CICS, would send error map to terminal */
+
+   END DISPLAY_ERROR;
+
+   /*-----------------------------------------------------------------*/
+   /* Process COBOL Request (COBOL Interoperability)                  */
+   /*-----------------------------------------------------------------*/
+   PROCESS_COBOL_REQUEST: PROCEDURE(PARM_DATA);
+     DECLARE PARM_DATA CHAR(200);
+     DECLARE FUNCTION_CODE CHAR(1);
+     DECLARE REQUEST_ID CHAR(10);
+     
+     /* Parse COBOL parameter structure */
+     FUNCTION_CODE = SUBSTR(PARM_DATA, 1, 1);
+     REQUEST_ID = SUBSTR(PARM_DATA, 2, 10);
+     
+     PUT SKIP LIST('Processing COBOL request:');
+     PUT SKIP LIST('  Function: ' || FUNCTION_CODE);
+     PUT SKIP LIST('  Request ID: ' || TRIM(REQUEST_ID));
+     
+     /* Route to appropriate PL/I handler */
+     SELECT (FUNCTION_CODE);
+       WHEN ('C') CALL DISPLAY_MAIN_MENU();
+       WHEN ('A') PUT SKIP LIST('Account function requested');
+       WHEN ('T') PUT SKIP LIST('Transfer function requested');
+       OTHERWISE PUT SKIP LIST('Unknown COBOL function');
+     END;
+
+   END PROCESS_COBOL_REQUEST;
+
+   /*-----------------------------------------------------------------*/
+   /* External Procedure References - Not defined here                */
+   /*-----------------------------------------------------------------*/
+   %IF ¬PRODUCTION %THEN %DO;
+     /* Debug mode - declare stubs */
+     DECLARE TOTAL_REQUESTS FIXED BIN(31) EXTERNAL;
+     DECLARE TOTAL_APPROVALS FIXED BIN(31) EXTERNAL;
+     DECLARE TOTAL_DENIALS FIXED BIN(31) EXTERNAL;
+   %END;
+
+ END BNKMAIN;

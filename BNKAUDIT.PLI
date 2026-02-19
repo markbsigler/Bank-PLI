@@ -1,0 +1,461 @@
+ /*********************************************************************/
+ /*  BNKAUDIT.PLI - Transaction Audit Logger (I/O Showcase)          */
+ /*                                                                   */
+ /*  Demonstrates:                                                   */
+ /*    - STREAM OUTPUT PRINT with PAGESIZE/LINESIZE                  */
+ /*    - PUT EDIT with all format items: A,F,E,B,P,X,SKIP,LINE,etc.  */
+ /*    - PUT STRING for in-memory formatting                         */
+ /*    - GET STRING EDIT for parsing                                 */
+ /*    - CONVERSION ON-condition with ONSOURCE replacement           */
+ /*    - FILE variable passing                                       */
+ /*    - TITLE option on OPEN                                        */
+ /*    - COPY option on GET                                          */
+ /*    - ENVIRONMENT options                                         */
+ /*    - %PAGE/%SKIP/%PRINT listing directives                       */
+ /*********************************************************************/
+
+ %PROCESS RULES(IBM) MARGINS(2,72) SOURCE XREF;
+ %PROCESS LIMITS(FIXEDDEC(15,2));
+ %PAGE;  /* Start new page in listing */
+
+ BNKAUDIT: PROCEDURE OPTIONS(MAIN, REENTRANT);
+
+   %INCLUDE BNKPKG;
+   %INCLUDE TXNSTR;
+   %INCLUDE ACCTSTR;
+   %INCLUDE CUSTSTR;
+
+   /* File declarations */
+   DECLARE AUDIT_LOG FILE STREAM OUTPUT PRINT
+     ENV(TITLE('AUDIT.LOG') PAGESIZE(60) LINESIZE(132)
+         BLKSIZE(13200) RECSIZE(132));
+
+   DECLARE DETAIL_REPORT FILE STREAM OUTPUT PRINT
+     ENV(PAGESIZE(55) LINESIZE(132));
+
+   DECLARE SUMMARY_REPORT FILE STREAM OUTPUT PRINT
+     ENV(PAGESIZE(60) LINESIZE(80));
+
+   /* Working variables */
+   DECLARE PAGE_NUM              FIXED BIN(31) INIT(1);
+   DECLARE LINE_NUM              FIXED BIN(15) INIT(0);
+   DECLARE TRANSACTION_COUNT     FIXED BIN(31) INIT(0);
+   DECLARE TOTAL_DEBITS          CURRENCY_T INIT(0.00);
+   DECLARE TOTAL_CREDITS         CURRENCY_T INIT(0.00);
+   DECLARE REPORT_DATE           DATE_T;
+   DECLARE REPORT_TIME           TIME_T;
+
+   /* Format string buffer - for STRING pseudo-variable */
+   DECLARE FORMAT_BUF            CHAR(256);
+   DECLARE INPUT_BUF             CHAR(256);
+
+   /* Format label for remote formatting */
+   DECLARE ACCT_LINE_FMT         FORMAT;
+
+   /* Sample transaction for demonstration */
+   DECLARE SAMPLE_TXN            LIKE TRANSACTION_LOG;
+
+   /*-----------------------------------------------------------------*/
+   /* Main Audit Processing                                           */
+   /*-----------------------------------------------------------------*/
+
+   REPORT_DATE = GET_CURRENT_DATE();
+   REPORT_TIME = GET_CURRENT_TIME();
+
+   CALL OPEN_AUDIT_FILES();
+
+   /* Set up ENDPAGE handler */
+   ON ENDPAGE(DETAIL_REPORT) BEGIN;
+     PAGE_NUM = PAGE_NUM + 1;
+     LINE_NUM = 0;
+     CALL PRINT_DETAIL_PAGE_HEADER();
+   END;
+
+   /* Demonstrate all format types */
+   CALL DEMONSTRATE_FORMAT_ITEMS();
+
+   /* Process sample transactions */
+   CALL PROCESS_AUDIT_RECORDS();
+
+   /* Generate summary */
+   CALL PRINT_SUMMARY_REPORT();
+
+   CALL CLOSE_AUDIT_FILES();
+
+   STOP;
+
+   /*-----------------------------------------------------------------*/
+   /* Open Audit Files - FILE variable demo                          */
+   /*-----------------------------------------------------------------*/
+   OPEN_AUDIT_FILES: PROCEDURE;
+     DECLARE F FILE VARIABLE;  /* FILE variable for passing */
+
+     /* Open main audit log */
+     OPEN FILE(AUDIT_LOG) PAGESIZE(60) LINESIZE(132);
+     
+     PUT SKIP FILE(AUDIT_LOG) LIST('Audit log opened at ' || 
+                                   REPORT_TIME);
+
+     /* Open detail report with dynamic title */
+     OPEN FILE(DETAIL_REPORT) TITLE('DETAIL.' || REPORT_DATE);
+
+     /* Open summary report */
+     OPEN FILE(SUMMARY_REPORT);
+
+     /* Demonstrate FILE variable usage */
+     F = AUDIT_LOG;
+     CALL WRITE_TO_FILE(F, 'Using FILE variable');
+
+   END OPEN_AUDIT_FILES;
+
+   /*-----------------------------------------------------------------*/
+   /* Write to File - FILE parameter demo                             */
+   /*-----------------------------------------------------------------*/
+   WRITE_TO_FILE: PROCEDURE(F, MESSAGE);
+     DECLARE F FILE VARIABLE;
+     DECLARE MESSAGE CHAR(*) VARYING;
+
+     PUT SKIP FILE(F) LIST(MESSAGE);
+
+   END WRITE_TO_FILE;
+
+   /*-----------------------------------------------------------------*/
+   /* Demonstrate Format Items - Comprehensive PUT EDIT showcase      */
+   /*-----------------------------------------------------------------*/
+   DEMONSTRATE_FORMAT_ITEMS: PROCEDURE;
+     DECLARE INT_VAL           FIXED BIN(31) INIT(12345);
+     DECLARE DEC_VAL           FIXED DEC(15,2) INIT(98765.43);
+     DECLARE FLOAT_VAL         FLOAT DEC(16) INIT(3.14159265);
+     DECLARE BIT_VAL           BIT(8) INIT('10110011'B);
+     DECLARE CHAR_VAL          CHAR(20) INIT('Sample Text');
+
+     PUT SKIP(2) FILE(DETAIL_REPORT) LIST('=== FORMAT DEMONSTRATION ===');
+     PUT SKIP(2) FILE(DETAIL_REPORT);
+
+     /* A format - Alphanumeric */
+     PUT SKIP FILE(DETAIL_REPORT) EDIT
+       ('A Format (20 chars):', CHAR_VAL)
+       (A, X(5), A(20));
+
+     /* F format - Fixed-point */
+     PUT SKIP FILE(DETAIL_REPORT) EDIT
+       ('F Format (w=10,d=2):', DEC_VAL)
+       (A, X(5), F(10,2));
+
+     /* E format - Floating-point/Scientific */
+     PUT SKIP FILE(DETAIL_REPORT) EDIT
+       ('E Format (w=15,d=8):', FLOAT_VAL)
+       (A, X(5), E(15,8));
+
+     /* B format - Bit string */
+     PUT SKIP FILE(DETAIL_REPORT) EDIT
+       ('B Format (8 bits):', BIT_VAL)
+       (A, X(5), B(8));
+
+     /* P format - Picture */
+     PUT SKIP FILE(DETAIL_REPORT) EDIT
+       ('P Format $ZZZ,ZZ9.99:', DEC_VAL)
+       (A, X(5), P'$ZZZ,ZZ9.99');
+
+     /* X format - Spacing */
+     PUT SKIP FILE(DETAIL_REPORT) EDIT
+       ('X(10) spacing:', 'After 10 spaces')
+       (A, X(10), A);
+
+     /* COLUMN format - Absolute positioning */
+     PUT SKIP FILE(DETAIL_REPORT) EDIT
+       ('COLUMN(50):', 'Positioned at column 50')
+       (A, COLUMN(50), A);
+
+     /* LINE format - Absolute line positioning */
+     PUT FILE(DETAIL_REPORT) EDIT
+       ('LINE(25):', 'Positioned at line 25')
+       (LINE(25), A, COLUMN(5), A);
+
+     /* PAGE format - New page */
+     PUT FILE(DETAIL_REPORT) PAGE;
+     PAGE_NUM = PAGE_NUM + 1;
+     LINE_NUM = 0;
+
+     /* SKIP format - Relative line spacing */
+     PUT FILE(DETAIL_REPORT) EDIT
+       ('SKIP(3) - Three blank lines above')
+       (SKIP(3), A);
+
+     /* Combined formats - Complex layout */
+     PUT SKIP(2) FILE(DETAIL_REPORT) EDIT
+       ('Complex Layout:',
+        'Integer:', INT_VAL,
+        'Decimal:', DEC_VAL,
+        'Float:', FLOAT_VAL)
+       (A, SKIP, COLUMN(5), A, X(2), F(10),
+        SKIP, COLUMN(5), A, X(2), F(12,2),
+        SKIP, COLUMN(5), A, X(2), E(15,8));
+
+     /* Remote format using R */
+     ACCT_LINE_FMT = FORMAT(SKIP, COLUMN(5), A(8), X(5), 
+                            A(30), X(5), F(15,2));
+     
+     PUT FILE(DETAIL_REPORT) EDIT
+       ('A0001234', 'John Doe', 1234.56)
+       (R(ACCT_LINE_FMT));
+
+   END DEMONSTRATE_FORMAT_ITEMS;
+
+   /*-----------------------------------------------------------------*/
+   /* Process Audit Records - String pseudo-variable demo            */
+   /*-----------------------------------------------------------------*/
+   PROCESS_AUDIT_RECORDS: PROCEDURE;
+     DECLARE I FIXED BIN(15);
+
+     PUT SKIP(3) FILE(DETAIL_REPORT);
+     CALL PRINT_DETAIL_PAGE_HEADER();
+
+     /* Process 10 sample transactions */
+     DO I = 1 TO 10;
+       CALL CREATE_SAMPLE_TRANSACTION(I);
+       CALL WRITE_AUDIT_RECORD();
+       CALL WRITE_DETAIL_LINE();
+       
+       TRANSACTION_COUNT = TRANSACTION_COUNT + 1;
+       LINE_NUM = LINE_NUM + 1;
+
+       /* Update totals - also demonstrate IF with OTHERWISE */
+       SELECT (SAMPLE_TXN.TXN_TYPE);
+         WHEN (TXN_DEBIT)
+           TOTAL_DEBITS = TOTAL_DEBITS + 
+             SAMPLE_TXN.AMOUNT_INFO.TXN_AMOUNT;
+         WHEN (TXN_CREDIT)
+           TOTAL_CREDITS = TOTAL_CREDITS +
+             SAMPLE_TXN.AMOUNT_INFO.TXN_AMOUNT;
+         OTHERWISE ;
+       END;
+
+       /* IF with OTHERWISE (Enterprise PL/I extension) */
+       IF SAMPLE_TXN.TXN_TYPE = TXN_DEBIT THEN
+         ; /* Already handled */
+       ELSE IF SAMPLE_TXN.TXN_TYPE = TXN_CREDIT THEN
+         ; /* Already handled */
+       ELSE OTHERWISE DO;
+         PUT SKIP LIST('  Unknown transaction type encountered');
+       END;
+     END;
+
+   END PROCESS_AUDIT_RECORDS;
+
+   /*-----------------------------------------------------------------*/
+   /* Create Sample Transaction                                       */
+   /*-----------------------------------------------------------------*/
+   CREATE_SAMPLE_TRANSACTION: PROCEDURE(SEQ);
+     DECLARE SEQ FIXED BIN(15);
+
+     /* Build transaction ID using PUT STRING */
+     PUT STRING(FORMAT_BUF) EDIT
+       ('TXN', REPORT_DATE, '-', SEQ)
+       (A, A, A, F(4));
+     
+     SAMPLE_TXN.TRANSACTION_ID = TRIM(FORMAT_BUF);
+
+     SAMPLE_TXN.TXN_TYPE = MOD(SEQ, 2) + 1;  /* Alternate debit/credit */
+     SAMPLE_TXN.AMOUNT_INFO.TXN_AMOUNT = 100.00 * SEQ;
+     SAMPLE_TXN.TIMESTAMP_INFO.TXN_DATE = REPORT_DATE;
+     SAMPLE_TXN.TIMESTAMP_INFO.TXN_TIME = REPORT_TIME;
+     SAMPLE_TXN.DESCRIPTION = 'Sample transaction ' || TRIM(SEQ);
+
+   END CREATE_SAMPLE_TRANSACTION;
+
+   /*-----------------------------------------------------------------*/
+   /* Write Audit Record - PUT EDIT comprehensive example            */
+   /*-----------------------------------------------------------------*/
+   WRITE_AUDIT_RECORD: PROCEDURE;
+     
+     /* Write to audit log with full formatting */
+     PUT SKIP FILE(AUDIT_LOG) EDIT
+       (SAMPLE_TXN.TRANSACTION_ID,
+        SAMPLE_TXN.TIMESTAMP_INFO.TXN_DATE,
+        SAMPLE_TXN.TIMESTAMP_INFO.TXN_TIME,
+        TXN_CODES(SAMPLE_TXN.TXN_TYPE),
+        SAMPLE_TXN.AMOUNT_INFO.TXN_AMOUNT,
+        SAMPLE_TXN.DESCRIPTION)
+       (A(16), X(2), A(10), X(2), A(8), X(2),
+        A(3), X(2), F(12,2), X(2), A(50));
+
+   END WRITE_AUDIT_RECORD;
+
+   /*-----------------------------------------------------------------*/
+   /* Write Detail Line - More PUT EDIT examples                     */
+   /*-----------------------------------------------------------------*/
+   WRITE_DETAIL_LINE: PROCEDURE;
+     
+     PUT SKIP FILE(DETAIL_REPORT) EDIT
+       (LINE_NUM,
+        SAMPLE_TXN.TRANSACTION_ID,
+        SAMPLE_TXN.TIMESTAMP_INFO.TXN_DATE,
+        TXN_CODES(SAMPLE_TXN.TXN_TYPE),
+        SAMPLE_TXN.AMOUNT_INFO.TXN_AMOUNT,
+        SAMPLE_TXN.DESCRIPTION)
+       (COLUMN(3), F(3),
+        COLUMN(8), A(16),
+        COLUMN(26), A(10),
+        COLUMN(38), A(3),
+        COLUMN(43), P'$ZZZ,ZZ9.99',
+        COLUMN(58), A(50));
+
+   END WRITE_DETAIL_LINE;
+
+   /*-----------------------------------------------------------------*/
+   /* Print Detail Page Header                                        */
+   /*-----------------------------------------------------------------*/
+   PRINT_DETAIL_PAGE_HEADER: PROCEDURE;
+     
+     PUT SKIP FILE(DETAIL_REPORT) EDIT
+       ('BANKING SYSTEM AUDIT DETAIL REPORT')
+       (COLUMN(40), A);
+
+     PUT SKIP FILE(DETAIL_REPORT) EDIT
+       ('Report Date:', REPORT_DATE,
+        'Page:', PAGE_NUM)
+       (COLUMN(5), A, X(2), A(10),
+        COLUMN(100), A, X(2), F(4));
+
+     PUT SKIP FILE(DETAIL_REPORT) EDIT
+       (COPY('=', 132))
+       (A);
+
+     PUT SKIP FILE(DETAIL_REPORT) EDIT
+       ('Seq', 'Transaction ID', 'Date', 'Type', 'Amount', 'Description')
+       (COLUMN(3), A(3),
+        COLUMN(8), A(14),
+        COLUMN(26), A(4),
+        COLUMN(38), A(4),
+        COLUMN(43), A(6),
+        COLUMN(58), A(11));
+
+     PUT SKIP FILE(DETAIL_REPORT) EDIT
+       (COPY('-', 132))
+       (A);
+
+     LINE_NUM = 6;
+
+   END PRINT_DETAIL_PAGE_HEADER;
+
+   /*-----------------------------------------------------------------*/
+   /* Print Summary Report - Different output file demo              */
+   /*-----------------------------------------------------------------*/
+   PRINT_SUMMARY_REPORT: PROCEDURE;
+     DECLARE AVG_TRANSACTION   CURRENCY_T;
+
+     IF TRANSACTION_COUNT > 0 THEN
+       AVG_TRANSACTION = (TOTAL_DEBITS + TOTAL_CREDITS) / TRANSACTION_COUNT;
+     ELSE
+       AVG_TRANSACTION = 0.00;
+
+     /* Summary report - narrower format (80 columns) */
+     PUT FILE(SUMMARY_REPORT) PAGE;
+
+     PUT SKIP(2) FILE(SUMMARY_REPORT) EDIT
+       ('AUDIT SUMMARY REPORT')
+       (COLUMN(28), A);
+
+     PUT SKIP(2) FILE(SUMMARY_REPORT) EDIT
+       ('Report Date:', REPORT_DATE)
+       (COLUMN(5), A, X(3), A);
+
+     PUT SKIP FILE(SUMMARY_REPORT) EDIT
+       ('Report Time:', REPORT_TIME)
+       (COLUMN(5), A, X(3), A);
+
+     PUT SKIP(3) FILE(SUMMARY_REPORT) EDIT
+       (COPY('-', 80))
+       (A);
+
+     PUT SKIP(2) FILE(SUMMARY_REPORT) EDIT
+       ('TRANSACTION STATISTICS')
+       (COLUMN(26), A);
+
+     PUT SKIP(2) FILE(SUMMARY_REPORT) EDIT
+       ('Total Transactions Processed:', TRANSACTION_COUNT)
+       (COLUMN(5), A, COLUMN(50), F(10));
+
+     PUT SKIP FILE(SUMMARY_REPORT) EDIT
+       ('Total Debits:', TOTAL_DEBITS)
+       (COLUMN(5), A, COLUMN(50), P'$ZZZ,ZZZ,ZZ9.99');
+
+     PUT SKIP FILE(SUMMARY_REPORT) EDIT
+       ('Total Credits:', TOTAL_CREDITS)
+       (COLUMN(5), A, COLUMN(50), P'$ZZZ,ZZZ,ZZ9.99');
+
+     PUT SKIP FILE(SUMMARY_REPORT) EDIT
+       ('Net Position:', (TOTAL_CREDITS - TOTAL_DEBITS))
+       (COLUMN(5), A, COLUMN(50), P'$ZZZ,ZZZ,ZZ9.99CR');
+
+     PUT SKIP FILE(SUMMARY_REPORT) EDIT
+       ('Average Transaction:', AVG_TRANSACTION)
+       (COLUMN(5), A, COLUMN(50), P'$ZZZ,ZZ9.99');
+
+     PUT SKIP(3) FILE(SUMMARY_REPORT) EDIT
+       (COPY('-', 80))
+       (A);
+
+     PUT SKIP(2) FILE(SUMMARY_REPORT) EDIT
+       ('END OF REPORT')
+       (COLUMN(33), A);
+
+   END PRINT_SUMMARY_REPORT;
+
+   /*-----------------------------------------------------------------*/
+   /* Parse Input String - GET STRING EDIT demo                       */
+   /*-----------------------------------------------------------------*/
+   PARSE_TRANSACTION_LINE: PROCEDURE(INPUT_LINE);
+     DECLARE INPUT_LINE        CHAR(*) VARYING;
+     DECLARE PARSED_ID         CHAR(16);
+     DECLARE PARSED_DATE       CHAR(10);
+     DECLARE PARSED_AMOUNT     FIXED DEC(15,2);
+
+     /* Demonstrate CONVERSION handling during GET */
+     ON CONVERSION BEGIN;
+       DECLARE CONV_SRC CHAR(100) VARYING;
+       CONV_SRC = ONSOURCE();
+       
+       PUT SKIP LIST('Conversion error parsing: ' || CONV_SRC);
+       
+       /* Replace with zero */
+       ONSOURCE() = '0';
+     END;
+
+     /* Parse fixed-format input */
+     GET STRING(INPUT_LINE) EDIT
+       (PARSED_ID, PARSED_DATE, PARSED_AMOUNT)
+       (A(16), X(2), A(10), X(2), F(12,2));
+
+     PUT SKIP LIST('Parsed transaction:');
+     PUT SKIP LIST('  ID: ' || TRIM(PARSED_ID));
+     PUT SKIP LIST('  Date: ' || TRIM(PARSED_DATE));
+     PUT SKIP LIST('  Amount: $' || TRIM(PARSED_AMOUNT));
+
+     REVERT CONVERSION;
+
+   END PARSE_TRANSACTION_LINE;
+
+   /*-----------------------------------------------------------------*/
+   /* Close Audit Files                                               */
+   /*-----------------------------------------------------------------*/
+   CLOSE_AUDIT_FILES: PROCEDURE;
+     
+     PUT SKIP(2) FILE(AUDIT_LOG) LIST('Audit log closed at ' ||
+                                      GET_CURRENT_TIME());
+     
+     CLOSE FILE(AUDIT_LOG);
+     CLOSE FILE(DETAIL_REPORT);
+     CLOSE FILE(SUMMARY_REPORT);
+
+     PUT SKIP LIST('All audit files closed successfully');
+
+   END CLOSE_AUDIT_FILES;
+
+ %PAGE;  /* New page in source listing */
+
+ END BNKAUDIT;
+
+ %SKIP(5);  /* Skip 5 lines in source listing */
+ %PRINT;    /* Resume source listing (if previously %NOPRINT) */

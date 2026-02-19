@@ -1,0 +1,535 @@
+ /*********************************************************************/
+ /*  BNKCUST.PLI - Customer Management (CICS Online Module)          */
+ /*                                                                   */
+ /*  Demonstrates:                                                   */
+ /*    - PROCEDURE OPTIONS(MAIN REENTRANT)                           */
+ /*    - EXEC CICS commands (MAP I/O, FILE control, LINK, RETURN)    */
+ /*    - EXEC SQL embedded DB2 operations                            */
+ /*    - Complex SELECT/WHEN/OTHERWISE dispatching                   */
+ /*    - Nested IF/THEN/ELSE with compound Boolean                   */
+ /*    - Built-in string functions (SUBSTR, INDEX, LENGTH, etc.)     */
+ /*    - VERIFY, TRANSLATE for data validation                       */
+ /*    - ADDR, NULL, SYSNULL pointer ops                             */
+ /*    - ONCODE, ONFILE, ONKEY interrogation                         */
+ /*    - DISPLAY for operator console                                */
+ /*********************************************************************/
+
+ %PROCESS RULES(IBM) MARGINS(2,72) SOURCE XREF;
+ %PROCESS LIMITS(FIXEDDEC(15,2));
+ %PROCESS CICS STMT SQL;
+
+ BNKCUST: PROCEDURE OPTIONS(MAIN, REENTRANT) REORDER;
+
+   /* Package and copybook includes */
+   %INCLUDE BNKPKG;
+   %INCLUDE CUSTSTR;
+   %INCLUDE SQLCA;
+   %INCLUDE CICSDEF;
+   %INCLUDE ERRHAND;
+
+   /* Local declarations */
+   DECLARE FUNCTION_CODE         CHAR(1);
+   DECLARE CUSTOMER_NUM          CUST_NUM_T;
+   DECLARE SEARCH_KEY            CHAR(50) VARYING;
+   DECLARE RESPONSE_CODE         FIXED BIN(31);
+   DECLARE USERID                CHAR(8);
+   DECLARE TERMID                CHAR(4);
+   DECLARE TIMESTAMP             TIMESTAMP_T;
+   DECLARE ERROR_MESSAGE         CHAR(256) VARYING;
+   DECLARE VALIDATION_FAILED     BIT(1);
+   DECLARE CURSOR_OPEN_FLAG      BIT(1) INIT('0'B);
+   DECLARE RECORD_COUNT          FIXED BIN(31);
+
+   /* Map I/O areas */
+   DECLARE
+     1 CUSTOMER_MAP,
+       2 MAP_FUNCTION          CHAR(1),
+       2 MAP_CUST_ID           CHAR(10),
+       2 MAP_TITLE             CHAR(10),
+       2 MAP_FIRST_NAME        CHAR(30),
+       2 MAP_LAST_NAME         CHAR(40),
+       2 MAP_EMAIL             CHAR(80),
+       2 MAP_PHONE             CHAR(14),
+       2 MAP_ADDRESS           CHAR(60),
+       2 MAP_CITY              CHAR(40),
+       2 MAP_STATE             CHAR(20),
+       2 MAP_POSTAL_CODE       CHAR(10),
+       2 MAP_COUNTRY           CHAR(3),
+       2 MAP_DOB               CHAR(10),
+       2 MAP_CREDIT_SCORE      CHAR(3),
+       2 MAP_MESSAGE           CHAR(79);
+
+   /* SQL cursor declaration */
+   EXEC SQL DECLARE CUST_CURSOR CURSOR FOR
+     SELECT CUSTOMER_ID, FIRST_NAME, LAST_NAME, EMAIL,
+            PHONE_PRIMARY, CREDIT_SCORE, DATE_OF_BIRTH
+     FROM CUSTOMER_TABLE
+     WHERE LAST_NAME LIKE :SEARCH_KEY
+        OR EMAIL LIKE :SEARCH_KEY
+     ORDER BY LAST_NAME, FIRST_NAME;
+
+   /* SQL host variables */
+   DECLARE SQL_CUST_ID           FIXED DEC(10);
+   DECLARE SQL_FIRST_NAME        CHAR(30) VARYING;
+   DECLARE SQL_LAST_NAME         CHAR(40) VARYING;
+   DECLARE SQL_EMAIL             CHAR(80) VARYING;
+   DECLARE SQL_PHONE             CHAR(14);
+   DECLARE SQL_CREDIT_SCORE      FIXED DEC(3);
+   DECLARE SQL_DOB               CHAR(10);
+
+   /*-----------------------------------------------------------------*/
+   /* Main Entry Point - CICS Transaction Handler                     */
+   /*-----------------------------------------------------------------*/
+
+   CALL INITIALIZE_ENVIRONMENT();
+
+   /* Receive map from terminal */
+   EXEC CICS RECEIVE
+     MAP(CUSTMAP_NAME)
+     MAPSET('BANKMAP')
+     INTO(CUSTOMER_MAP)
+     RESP(EIBRESP)
+     RESP2(EIBRESP2);
+
+   IF EIBRESP = DFHRESP_MAPFAIL THEN DO;
+     /* First time through - present empty map */
+     CALL SEND_INITIAL_MAP();
+     EXEC CICS RETURN
+       TRANSID(CUST_TXN_ID)
+       COMMAREA(CUSTOMER_MAP)
+       LENGTH(LENGTH(CUSTOMER_MAP));
+   END;
+
+   IF EIBRESP ¬= DFHRESP_NORMAL THEN DO;
+     ERROR_MESSAGE = 'Map receive failed: ' || TRIM(EIBRESP);
+     CALL DISPLAY_ERROR(ERROR_MESSAGE);
+     CALL SEND_ERROR_MAP(ERROR_MESSAGE);
+     GOTO EXIT_PROGRAM;
+   END;
+
+   FUNCTION_CODE = MAP_FUNCTION;
+
+   /* Complex SELECT dispatching - demonstrates nested SELECT */
+   SELECT (FUNCTION_CODE);
+     
+     WHEN (FUNC_INQUIRY) DO;
+       /* Further dispatch based on search method */
+       IF LENGTH(TRIM(MAP_CUST_ID)) > 0 THEN DO;
+         /* Inquiry by customer ID */
+         CALL INQUIRE_BY_ID();
+       END;
+       ELSE IF LENGTH(TRIM(MAP_LAST_NAME)) > 0 |
+               LENGTH(TRIM(MAP_EMAIL)) > 0 THEN DO;
+         /* Inquiry by name or email - cursor-based */
+         CALL INQUIRE_BY_CRITERIA();
+       END;
+       ELSE DO;
+         ERROR_MESSAGE = 'Search criteria required';
+         CALL SEND_ERROR_MAP(ERROR_MESSAGE);
+       END;
+     END;
+
+     WHEN (FUNC_CREATE) DO;
+       /* Validate all required fields first */
+       CALL VALIDATE_CUSTOMER_DATA();
+       
+       IF ¬VALIDATION_FAILED THEN DO;
+         /* Additional business rule checks */
+         IF CUSTOMER_MASTER.CREDIT_SCORE < MIN_CREDIT_SCORE THEN DO;
+           SELECT (CUSTOMER_MASTER.ACCOUNT_COUNT);
+             WHEN (0) DO;
+               /* New customer with low score - requires approval */
+               CALL FLAG_FOR_MANUAL_REVIEW('Low credit score');
+               ERROR_MESSAGE = 'Application flagged for review';
+               CALL SEND_INFO_MAP(ERROR_MESSAGE);
+             END;
+             OTHERWISE DO;
+               /* Existing customer - allow with warning */
+               SIGNAL CREDIT_THRESHOLD;
+               CALL CREATE_CUSTOMER_RECORD();
+             END;
+           END;
+         END;
+         ELSE DO;
+           CALL CREATE_CUSTOMER_RECORD();
+         END;
+       END;
+       ELSE DO;
+         CALL SEND_ERROR_MAP(ERROR_MESSAGE);
+       END;
+     END;
+
+     WHEN (FUNC_UPDATE) DO;
+       /* Retrieve existing record first */
+       CALL INQUIRE_BY_ID();
+       
+       IF RESPONSE_CODE = RC_SUCCESS THEN DO;
+         /* Merge map data with existing record */
+         CALL MERGE_MAP_TO_STRUCTURE();
+         CALL VALIDATE_CUSTOMER_DATA();
+         
+         IF ¬VALIDATION_FAILED THEN
+           CALL UPDATE_CUSTOMER_RECORD();
+         ELSE
+           CALL SEND_ERROR_MAP(ERROR_MESSAGE);
+       END;
+       ELSE DO;
+         ERROR_MESSAGE = 'Customer not found for update';
+         CALL SEND_ERROR_MAP(ERROR_MESSAGE);
+       END;
+     END;
+
+     WHEN (FUNC_DELETE) DO;
+       /* Check for open accounts before allowing delete */
+       CALL CHECK_OPEN_ACCOUNTS();
+       
+       SELECT (RESPONSE_CODE);
+         WHEN (RC_SUCCESS) DO;
+           IF CUSTOMER_MASTER.ACCOUNT_COUNT = 0 THEN DO;
+             CALL DELETE_CUSTOMER_RECORD();
+           END;
+           ELSE DO;
+             ERROR_MESSAGE = 'Cannot delete - ' || 
+               TRIM(CUSTOMER_MASTER.ACCOUNT_COUNT) ||
+               ' active account(s)';
+             CALL SEND_ERROR_MAP(ERROR_MESSAGE);
+           END;
+         END;
+         WHEN (RC_NOT_FOUND) DO;
+           ERROR_MESSAGE = 'Customer not found';
+           CALL SEND_ERROR_MAP(ERROR_MESSAGE);
+         END;
+         OTHERWISE DO;
+           ERROR_MESSAGE = 'Database error checking accounts';
+           CALL SEND_ERROR_MAP(ERROR_MESSAGE);
+         END;
+       END;
+     END;
+
+     WHEN (FUNC_LIST) DO;
+       /* List customers matching criteria */
+       CALL LIST_CUSTOMERS();
+     END;
+
+     OTHERWISE DO;
+       ERROR_MESSAGE = 'Invalid function code: ' || FUNCTION_CODE;
+       CALL SEND_ERROR_MAP(ERROR_MESSAGE);
+     END;
+   END;  /* SELECT FUNCTION_CODE */
+
+ EXIT_PROGRAM:
+   EXEC CICS RETURN;
+
+   /*-----------------------------------------------------------------*/
+   /* Initialize Environment                                          */
+   /*-----------------------------------------------------------------*/
+   INITIALIZE_ENVIRONMENT: PROCEDURE;
+     TIMESTAMP = GET_CURRENT_TIMESTAMP();
+     
+     EXEC CICS ASSIGN
+       USERID(USERID)
+       TERMID(TERMID);
+     
+     RESPONSE_CODE = RC_SUCCESS;
+     VALIDATION_FAILED = '0'B;
+     
+     PUT SKIP LIST('BNKCUST started - User: ' || TRIM(USERID) ||
+                   ' Terminal: ' || TRIM(TERMID));
+   END INITIALIZE_ENVIRONMENT;
+
+   /*-----------------------------------------------------------------*/
+   /* Inquire by Customer ID - Demonstrates EXEC SQL single-row fetch */
+   /*-----------------------------------------------------------------*/
+   INQUIRE_BY_ID: PROCEDURE;
+     DECLARE NUMERIC_ID FIXED DEC(10);
+     DECLARE CONV_ERROR BIT(1);
+     
+     /* Convert map field to numeric - demonstrates CONVERSION handling */
+     CONV_ERROR = '0'B;
+     
+     ON CONVERSION BEGIN;
+       CONV_ERROR = '1'B;
+     END;
+     
+     NUMERIC_ID = FIXED(MAP_CUST_ID, 10);
+     
+     REVERT CONVERSION;
+     
+     IF CONV_ERROR THEN DO;
+       ERROR_MESSAGE = 'Invalid customer ID format';
+       RESPONSE_CODE = RC_INVALID_DATA;
+       RETURN;
+     END;
+     
+     SQL_CUST_ID = NUMERIC_ID;
+     
+     EXEC SQL
+       SELECT CUSTOMER_ID, TITLE, FIRST_NAME, MIDDLE_INITIAL,
+              LAST_NAME, EMAIL, PHONE_PRIMARY,
+              ADDRESS_LINES, CITY, STATE_PROVINCE,
+              POSTAL_CODE, COUNTRY_CODE, DATE_OF_BIRTH,
+              CREDIT_SCORE, ANNUAL_INCOME, ACCOUNT_COUNT,
+              LAST_TRANSACTION
+       INTO :SQL_CUST_ID, :CUSTOMER_MASTER.NAME_INFO.TITLE,
+            :CUSTOMER_MASTER.NAME_INFO.FIRST_NAME,
+            :CUSTOMER_MASTER.NAME_INFO.MIDDLE_INITIAL,
+            :CUSTOMER_MASTER.NAME_INFO.LAST_NAME,
+            :CUSTOMER_MASTER.CONTACT_INFO.EMAIL,
+            :CUSTOMER_MASTER.CONTACT_INFO.PHONE_PRIMARY,
+            :CUSTOMER_MASTER.ADDRESS_INFO.ADDRESS_LINES,
+            :CUSTOMER_MASTER.ADDRESS_INFO.CITY,
+            :CUSTOMER_MASTER.ADDRESS_INFO.STATE_PROVINCE,
+            :CUSTOMER_MASTER.ADDRESS_INFO.POSTAL_CODE,
+            :CUSTOMER_MASTER.ADDRESS_INFO.COUNTRY_CODE,
+            :CUSTOMER_MASTER.DEMOGRAPHIC_INFO.DATE_OF_BIRTH,
+            :CUSTOMER_MASTER.FINANCIAL_INFO.CREDIT_SCORE,
+            :CUSTOMER_MASTER.FINANCIAL_INFO.ANNUAL_INCOME,
+            :CUSTOMER_MASTER.BANKING_INFO.ACCOUNT_COUNT,
+            :CUSTOMER_MASTER.BANKING_INFO.LAST_TRANSACTION
+       FROM CUSTOMER_TABLE
+       WHERE CUSTOMER_ID = :SQL_CUST_ID;
+     
+     SELECT (SQLCODE);
+       WHEN (SQL_SUCCESS) DO;
+         RESPONSE_CODE = RC_SUCCESS;
+         CALL STRUCTURE_TO_MAP();
+         CALL SEND_DATA_MAP();
+       END;
+       WHEN (SQL_NOT_FOUND) DO;
+         RESPONSE_CODE = RC_NOT_FOUND;
+         ERROR_MESSAGE = 'Customer ' || TRIM(MAP_CUST_ID) || ' not found';
+       END;
+       OTHERWISE DO;
+         RESPONSE_CODE = RC_DB_ERROR;
+         ERROR_MESSAGE = 'DB error: ' || TRIM(SQLCODE) ||
+                        ' - ' || SUBSTR(SQLERRMC, 1, SQLERRML);
+       END;
+     END;
+   END INQUIRE_BY_ID;
+
+   /*-----------------------------------------------------------------*/
+   /* Inquire by Criteria - Demonstrates cursor processing            */
+   /*-----------------------------------------------------------------*/
+   INQUIRE_BY_CRITERIA: PROCEDURE;
+     /* Build search pattern - demonstrates string manipulation */
+     IF LENGTH(TRIM(MAP_LAST_NAME)) > 0 THEN
+       SEARCH_KEY = '%' || TRIM(MAP_LAST_NAME) || '%';
+     ELSE IF LENGTH(TRIM(MAP_EMAIL)) > 0 THEN
+       SEARCH_KEY = '%' || TRIM(MAP_EMAIL) || '%';
+     ELSE
+       SEARCH_KEY = '%';
+     
+     EXEC SQL OPEN CUST_CURSOR;
+     
+     IF SQLCODE ¬= SQL_SUCCESS THEN DO;
+       ERROR_MESSAGE = 'Error opening cursor: ' || TRIM(SQLCODE);
+       RESPONSE_CODE = RC_DB_ERROR;
+       RETURN;
+     END;
+     
+     CURSOR_OPEN_FLAG = '1'B;
+     RECORD_COUNT = 0;
+     
+     /* Fetch first row */
+     EXEC SQL FETCH CUST_CURSOR
+       INTO :SQL_CUST_ID, :SQL_FIRST_NAME, :SQL_LAST_NAME,
+            :SQL_EMAIL, :SQL_PHONE, :SQL_CREDIT_SCORE, :SQL_DOB;
+     
+     DO WHILE (SQLCODE = SQL_SUCCESS & RECORD_COUNT < 100);
+       RECORD_COUNT = RECORD_COUNT + 1;
+       
+       /* Display to operator console - DISPLAY built-in */
+       CALL DISPLAY('Customer: ' || TRIM(SQL_CUST_ID) ||
+                   ' - ' || TRIM(SQL_FIRST_NAME) ||
+                   ' ' || TRIM(SQL_LAST_NAME));
+       
+       /* Store in work area for later */
+       /* ... additional processing ... */
+       
+       EXEC SQL FETCH CUST_CURSOR
+         INTO :SQL_CUST_ID, :SQL_FIRST_NAME, :SQL_LAST_NAME,
+              :SQL_EMAIL, :SQL_PHONE, :SQL_CREDIT_SCORE, :SQL_DOB;
+     END;
+     
+     EXEC SQL CLOSE CUST_CURSOR;
+     CURSOR_OPEN_FLAG = '0'B;
+     
+     IF RECORD_COUNT = 0 THEN DO;
+       ERROR_MESSAGE = 'No customers match search criteria';
+       RESPONSE_CODE = RC_NOT_FOUND;
+     END;
+     ELSE DO;
+       ERROR_MESSAGE = 'Found ' || TRIM(RECORD_COUNT) || ' customers';
+       RESPONSE_CODE = RC_SUCCESS;
+       CALL SEND_INFO_MAP(ERROR_MESSAGE);
+     END;
+   END INQUIRE_BY_CRITERIA;
+
+   /*-----------------------------------------------------------------*/
+   /* Validate Customer Data - Demonstrates string functions          */
+   /*-----------------------------------------------------------------*/
+   VALIDATE_CUSTOMER_DATA: PROCEDURE;
+     DECLARE PHONE_DIGITS CHAR(14);
+     DECLARE ALPHA_CHARS CHAR(52) STATIC INIT(
+       'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz');
+     DECLARE NUMERIC_CHARS CHAR(10) STATIC INIT('0123456789');
+     DECLARE EMAIL_VALID BIT(1);
+     
+     VALIDATION_FAILED = '0'B;
+     
+     /* Validate first name - must be alphabetic */
+     IF LENGTH(TRIM(CUSTOMER_MASTER.NAME_INFO.FIRST_NAME)) = 0 THEN DO;
+       ERROR_MESSAGE = 'First name is required';
+       VALIDATION_FAILED = '1'B;
+       RETURN;
+     END;
+     
+     IF VERIFY(CUSTOMER_MASTER.NAME_INFO.FIRST_NAME, ALPHA_CHARS) ¬= 0 THEN DO;
+       ERROR_MESSAGE = 'First name must contain only letters';
+       VALIDATION_FAILED = '1'B;
+       RETURN;
+     END;
+     
+     /* Validate last name */
+     IF LENGTH(TRIM(CUSTOMER_MASTER.NAME_INFO.LAST_NAME)) = 0 THEN DO;
+       ERROR_MESSAGE = 'Last name is required';
+       VALIDATION_FAILED = '1'B;
+       RETURN;
+     END;
+     
+     /* Validate email - basic format check */
+     EMAIL_VALID = '0'B;
+     IF INDEX(CUSTOMER_MASTER.CONTACT_INFO.EMAIL, '@') > 0 THEN DO;
+       IF INDEX(CUSTOMER_MASTER.CONTACT_INFO.EMAIL, '.') >
+          INDEX(CUSTOMER_MASTER.CONTACT_INFO.EMAIL, '@') THEN
+         EMAIL_VALID = '1'B;
+     END;
+     
+     IF ¬EMAIL_VALID THEN DO;
+       ERROR_MESSAGE = 'Invalid email format';
+       VALIDATION_FAILED = '1'B;
+       RETURN;
+     END;
+     
+     /* Validate phone - extract digits only */
+     PHONE_DIGITS = TRANSLATE(CUSTOMER_MASTER.CONTACT_INFO.PHONE_PRIMARY,
+                              COPY(' ', LENGTH(PHONE_DIGITS)),
+                              '()-. ');
+     
+     IF VERIFY(PHONE_DIGITS, NUMERIC_CHARS) ¬= 0 THEN DO;
+       ERROR_MESSAGE = 'Phone must contain only digits';
+       VALIDATION_FAILED = '1'B;
+       RETURN;
+     END;
+     
+     /* Build full name - demonstrates TRIM, LEFT, RIGHT */
+     CUSTOMER_MASTER.NAME_INFO.FULL_NAME =
+       TRIM(CUSTOMER_MASTER.NAME_INFO.TITLE) || ' ' ||
+       TRIM(CUSTOMER_MASTER.NAME_INFO.FIRST_NAME) || ' ' ||
+       CUSTOMER_MASTER.NAME_INFO.MIDDLE_INITIAL || ' ' ||
+       TRIM(CUSTOMER_MASTER.NAME_INFO.LAST_NAME);
+     
+     /* Additional validations could go here */
+     
+   END VALIDATE_CUSTOMER_DATA;
+
+   /*-----------------------------------------------------------------*/
+   /* Create Customer Record - Embedded SQL INSERT                    */
+   /*-----------------------------------------------------------------*/
+   CREATE_CUSTOMER_RECORD: PROCEDURE;
+     CALL GEN_CUSTOMER_NUM(CUSTOMER_MASTER.CUSTOMER_ID);
+     CUSTOMER_MASTER.AUDIT_INFO.CREATED_BY = USERID;
+     CUSTOMER_MASTER.AUDIT_INFO.CREATED_DATE = TIMESTAMP;
+     
+     EXEC SQL
+       INSERT INTO CUSTOMER_TABLE
+         (CUSTOMER_ID, TITLE, FIRST_NAME, LAST_NAME, EMAIL,
+          PHONE_PRIMARY, CREDIT_SCORE, DATE_OF_BIRTH,
+          CREATED_BY, CREATED_DATE)
+       VALUES
+         (:CUSTOMER_MASTER.CUSTOMER_ID,
+          :CUSTOMER_MASTER.NAME_INFO.TITLE,
+          :CUSTOMER_MASTER.NAME_INFO.FIRST_NAME,
+          :CUSTOMER_MASTER.NAME_INFO.LAST_NAME,
+          :CUSTOMER_MASTER.CONTACT_INFO.EMAIL,
+          :CUSTOMER_MASTER.CONTACT_INFO.PHONE_PRIMARY,
+          :CUSTOMER_MASTER.FINANCIAL_INFO.CREDIT_SCORE,
+          :CUSTOMER_MASTER.DEMOGRAPHIC_INFO.DATE_OF_BIRTH,
+          :CUSTOMER_MASTER.AUDIT_INFO.CREATED_BY,
+          :CUSTOMER_MASTER.AUDIT_INFO.CREATED_DATE);
+     
+     IF SQLCODE = SQL_SUCCESS THEN DO;
+       EXEC SQL COMMIT WORK;
+       ERROR_MESSAGE = 'Customer created: ' || 
+         TRIM(CUSTOMER_MASTER.CUSTOMER_ID);
+       RESPONSE_CODE = RC_SUCCESS;
+       CALL SEND_INFO_MAP(ERROR_MESSAGE);
+     END;
+     ELSE IF SQLCODE = SQL_DUPLICATE_KEY THEN DO;
+       EXEC SQL ROLLBACK WORK;
+       ERROR_MESSAGE = 'Duplicate customer ID';
+       RESPONSE_CODE = RC_DUPLICATE;
+       CALL SEND_ERROR_MAP(ERROR_MESSAGE);
+     END;
+     ELSE DO;
+       EXEC SQL ROLLBACK WORK;
+       ERROR_MESSAGE = 'DB error: ' || TRIM(SQLCODE);
+       RESPONSE_CODE = RC_DB_ERROR;
+       CALL SEND_ERROR_MAP(ERROR_MESSAGE);
+     END;
+   END CREATE_CUSTOMER_RECORD;
+
+   /* Additional procedures would be implemented similarly */
+   UPDATE_CUSTOMER_RECORD: PROCEDURE;
+     /* Update logic using EXEC SQL UPDATE */
+   END UPDATE_CUSTOMER_RECORD;
+
+   DELETE_CUSTOMER_RECORD: PROCEDURE;
+     /* Delete logic using EXEC SQL DELETE */
+   END DELETE_CUSTOMER_RECORD;
+
+   CHECK_OPEN_ACCOUNTS: PROCEDURE;
+     /* Query account count */
+   END CHECK_OPEN_ACCOUNTS;
+
+   LIST_CUSTOMERS: PROCEDURE;
+     /* Browse customer list */
+   END LIST_CUSTOMERS;
+
+   MERGE_MAP_TO_STRUCTURE: PROCEDURE;
+     /* Map field to structure mapping */
+   END MERGE_MAP_TO_STRUCTURE;
+
+   STRUCTURE_TO_MAP: PROCEDURE;
+     /* Structure to map field mapping */
+   END STRUCTURE_TO_MAP;
+
+   SEND_INITIAL_MAP: PROCEDURE;
+     /* Send blank map */
+   END SEND_INITIAL_MAP;
+
+   SEND_DATA_MAP: PROCEDURE;
+     /* Send populated map */
+   END SEND_DATA_MAP;
+
+   SEND_ERROR_MAP: PROCEDURE(MSG);
+     DECLARE MSG CHAR(*) VARYING;
+     /* Send error message to map */
+   END SEND_ERROR_MAP;
+
+   SEND_INFO_MAP: PROCEDURE(MSG);
+     DECLARE MSG CHAR(*) VARYING;
+     /* Send info message to map */
+   END SEND_INFO_MAP;
+
+   DISPLAY_ERROR: PROCEDURE(MSG);
+     DECLARE MSG CHAR(*) VARYING;
+     CALL DISPLAY('ERROR: ' || MSG);
+   END DISPLAY_ERROR;
+
+   FLAG_FOR_MANUAL_REVIEW: PROCEDURE(REASON);
+     DECLARE REASON CHAR(*) VARYING;
+     /* Flag customer for review */
+   END FLAG_FOR_MANUAL_REVIEW;
+
+ END BNKCUST;

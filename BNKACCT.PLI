@@ -1,0 +1,525 @@
+ /*********************************************************************/
+ /*  BNKACCT.PLI - Account Management Module                         */
+ /*                                                                   */
+ /*  Demonstrates:                                                   */
+ /*    - CONTROLLED storage with stack depth tracking                */
+ /*    - AREA and BASED variables for dynamic allocation             */
+ /*    - OFFSET for area-relative addressing                         */
+ /*    - DO WHILE/UNTIL/REPEAT loops with LEAVE/ITERATE              */
+ /*    - Array operations: SUM, PROD, HBOUND, LBOUND, DIM, POLY      */
+ /*    - Math built-ins: ABS, MOD, CEIL, FLOOR, ROUND, SQRT, LOG     */
+ /*    - Date/time built-ins: DATETIME, DAYS, SECS, DAYSTODATE       */
+ /*    - SIGNAL custom conditions                                    */
+ /*    - CURRENTSTORAGE, STORAGE, ALLOCATION built-ins               */
+ /*********************************************************************/
+
+ %PROCESS RULES(IBM) MARGINS(2,72) SOURCE XREF;
+ %PROCESS LIMITS(FIXEDDEC(15,2));
+ %PROCESS CICS STMT SQL;
+
+ BNKACCT: PROCEDURE OPTIONS(MAIN, REENTRANT);
+
+   %INCLUDE BNKPKG;
+   %INCLUDE ACCTSTR;
+   %INCLUDE CUSTSTR;
+   %INCLUDE TXNSTR;
+   %INCLUDE SQLCA;
+   %INCLUDE CICSDEF;
+   %INCLUDE ERRHAND;
+
+   /* CONTROLLED storage - stack-based account context */
+   DECLARE ACCOUNT_CONTEXT CONTROLLED;
+   DECLARE
+     1 ACCOUNT_CONTEXT,
+       2 CONTEXT_LEVEL       FIXED BIN(31),
+       2 PARENT_CONTEXT      POINTER,
+       2 ACCOUNT_DATA        LIKE ACCOUNT_MASTER,
+       2 CONTEXT_TIMESTAMP   TIMESTAMP_T;
+
+   /* Area for dynamic transaction buffer pool */
+   DECLARE TXN_BUFFER_AREA AREA(65536);
+   DECLARE TXN_BUFFER_PTR POINTER;
+   DECLARE TXN_COUNT_IN_AREA FIXED BIN(31);
+
+   /* BASED transaction node in area */
+   DECLARE
+     1 TXN_NODE BASED(TXN_BUFFER_PTR),
+       2 TXN_DATA            LIKE TRANSACTION_LOG,
+       2 NEXT_TXN_OFFSET     OFFSET(TXN_BUFFER_AREA);
+
+   /* Local variables */
+   DECLARE FUNCTION_CODE         CHAR(1);
+   DECLARE CURRENT_ACCT_TYPE     ACCT_TYPE_T ORDINAL;
+   DECLARE MONTHLY_PAYMENT       CURRENCY_T;
+   DECLARE TOTAL_INTEREST        CURRENCY_T;
+   DECLARE DAYS_SINCE_LAST_INT   FIXED BIN(31);
+   DECLARE STATEMENT_CYCLE_DAY   FIXED BIN(31);
+   DECLARE CONTEXT_DEPTH         FIXED BIN(31) STATIC INIT(0);
+   DECLARE STORAGE_USED          FIXED BIN(31);
+   DECLARE STORAGE_AVAILABLE     FIXED BIN(31);
+
+   /* Regulatory constants - NONASSIGNABLE */
+   DECLARE FDIC_INSURANCE_LIMIT FIXED DEC(15,2) STATIC NONASSIGNABLE
+     INIT(250000.00);  /* FDIC insurance maximum */
+   DECLARE MAX_CASH_TRANSACTION FIXED DEC(15,2) STATIC NONASSIGNABLE
+     INIT(10000.00);   /* BSA/AML reporting threshold */
+
+   /* Security-critical calculation - IRREDUCIBLE prevents optimization */
+   DECLARE HASH_ITERATION_COUNT FIXED BIN(31) IRREDUCIBLE;
+
+   /* Transaction sequence numbers - UNSIGNED (always positive) */
+   DECLARE TXN_SEQUENCE UNSIGNED FIXED BIN(31);
+
+   /* Amortization schedule array */
+   DECLARE AMORT_SCHEDULE(360),  /* Max 30 years */
+     2 PAYMENT_NUM               FIXED BIN(31),
+     2 PRINCIPAL_PART            CURRENCY_T,
+     2 INTEREST_PART             CURRENCY_T,
+     2 REMAINING_BALANCE         CURRENCY_T;
+
+   /*-----------------------------------------------------------------*/
+   /* Main Processing                                                 */
+   /*-----------------------------------------------------------------*/
+
+   CALL INITIALIZE_MODULE();
+
+   /* Receive function request from CICS */
+   FUNCTION_CODE = FUNC_INQUIRY;  /* Default */
+
+   SELECT (FUNCTION_CODE);
+     WHEN (FUNC_CREATE)  CALL CREATE_ACCOUNT();
+     WHEN (FUNC_INQUIRY) CALL INQUIRE_ACCOUNT();
+     WHEN (FUNC_UPDATE)  CALL UPDATE_ACCOUNT();
+     WHEN (FUNC_DELETE)  CALL DELETE_ACCOUNT();
+     OTHERWISE           CALL HANDLE_INVALID_FUNCTION();
+   END;
+
+   CALL CLEANUP_MODULE();
+
+   EXEC CICS RETURN;
+
+   /*-----------------------------------------------------------------*/
+   /* Initialize Module - Demonstrates AREA initialization            */
+   /*-----------------------------------------------------------------*/
+   INITIALIZE_MODULE: PROCEDURE;
+     /* Initialize area */
+     EMPTY(TXN_BUFFER_AREA);
+     TXN_COUNT_IN_AREA = 0;
+
+     /* Report storage usage - demonstrates storage built-ins */
+     STORAGE_USED = CURRENTSTORAGE();
+     STORAGE_AVAILABLE = STORAGE();
+
+     PUT SKIP LIST('BNKACCT Module Initialized');
+     PUT SKIP LIST('  Storage used: ' || TRIM(STORAGE_USED) || ' bytes');
+     PUT SKIP LIST('  Storage available: ' || TRIM(STORAGE_AVAILABLE) || 
+                   ' bytes');
+   END INITIALIZE_MODULE;
+
+   /*-----------------------------------------------------------------*/
+   /* Create Account - Demonstrates account type-specific logic       */
+   /*-----------------------------------------------------------------*/
+   CREATE_ACCOUNT: PROCEDURE;
+     DECLARE NEW_ACCT_NUM ACCT_NUM_T;
+
+     /* Push new context onto CONTROLLED stack */
+     ALLOCATE ACCOUNT_CONTEXT;
+     CONTEXT_DEPTH = CONTEXT_DEPTH + 1;
+     ACCOUNT_CONTEXT.CONTEXT_LEVEL = CONTEXT_DEPTH;
+     ACCOUNT_CONTEXT.CONTEXT_TIMESTAMP = GET_CURRENT_TIMESTAMP();
+
+     /* Generate account number */
+     CURRENT_ACCT_TYPE = CHECKING;  /* Example */
+     NEW_ACCT_NUM = GEN_ACCOUNT_NUM(CURRENT_ACCT_TYPE);
+
+     /* Initialize account structure */
+     ACCOUNT_MASTER.ACCOUNT_NUM = NEW_ACCT_NUM;
+     ACCOUNT_MASTER.ACCOUNT_TYPE = CURRENT_ACCT_TYPE;
+     ACCOUNT_MASTER.SORT_CODE = SYSTEM_SORT_CODE;
+     ACCOUNT_MASTER.DATES.OPENED_DATE = GET_CURRENT_DATE();
+
+     /* Set type-specific data using UNION */
+     SELECT (CURRENT_ACCT_TYPE);
+       WHEN (CHECKING) DO;
+         ACCOUNT_MASTER.TYPE_SPECIFIC_DATA.CHECKING.LAST_CHECK_NUM = 1000;
+         ACCOUNT_MASTER.TYPE_SPECIFIC_DATA.CHECKING.ATM_DAILY_LIMIT = 500.00;
+         ACCOUNT_MASTER.TYPE_SPECIFIC_DATA.CHECKING.MONTHLY_FEE = 12.00;
+         ACCOUNT_MASTER.RATES_AND_LIMITS.INTEREST_RATE = 
+           INTEREST_RATES(CHECKING);
+       END;
+
+       WHEN (SAVINGS) DO;
+         ACCOUNT_MASTER.TYPE_SPECIFIC_DATA.SAVINGS.INTEREST_TIER = 1;
+         ACCOUNT_MASTER.TYPE_SPECIFIC_DATA.SAVINGS.COMPOUND_FREQ = 12;
+         ACCOUNT_MASTER.TYPE_SPECIFIC_DATA.SAVINGS.WITHDRAWAL_LIMIT = 6;
+         ACCOUNT_MASTER.RATES_AND_LIMITS.INTEREST_RATE = 
+           INTEREST_RATES(SAVINGS);
+       END;
+
+       WHEN (MORTGAGE) DO;
+         /* Calculate mortgage payment - demonstrates math functions */
+         CALL CALCULATE_MORTGAGE_PAYMENT(
+           250000.00,    /* Principal */
+           0.068,        /* Rate 6.8% */
+           360,          /* 30 years */
+           MONTHLY_PAYMENT);
+
+         ACCOUNT_MASTER.TYPE_SPECIFIC_DATA.MORTGAGE.PRINCIPAL_AMOUNT = 
+           250000.00;
+         ACCOUNT_MASTER.TYPE_SPECIFIC_DATA.MORTGAGE.ORIGINAL_AMOUNT = 
+           250000.00;
+         ACCOUNT_MASTER.TYPE_SPECIFIC_DATA.MORTGAGE.TERM_MONTHS = 360;
+         ACCOUNT_MASTER.TYPE_SPECIFIC_DATA.MORTGAGE.MONTHLY_PAYMENT = 
+           MONTHLY_PAYMENT;
+
+         /* Generate amortization schedule */
+         CALL BUILD_AMORTIZATION_SCHEDULE(
+           250000.00, 0.068, 360);
+       END;
+
+       OTHERWISE DO;
+         PUT SKIP LIST('Account type not fully configured');
+       END;
+     END;
+
+     /* Calculate statement cycle date */
+     CALL SET_STATEMENT_CYCLE();
+
+     /* Insert into database */
+     CALL DB_INSERT_ACCOUNT();
+
+     /* Pop context */
+     FREE ACCOUNT_CONTEXT;
+     CONTEXT_DEPTH = CONTEXT_DEPTH - 1;
+
+   END CREATE_ACCOUNT;
+
+   /*-----------------------------------------------------------------*/
+   /* Calculate Mortgage Payment - Math built-ins demonstration       */
+   /*-----------------------------------------------------------------*/
+   CALCULATE_MORTGAGE_PAYMENT: PROCEDURE(PRINCIPAL, ANNUAL_RATE, 
+                                          TERM_MONTHS, PAYMENT);
+     DECLARE PRINCIPAL           CURRENCY_T;
+     DECLARE ANNUAL_RATE         RATE_T;
+     DECLARE TERM_MONTHS         FIXED BIN(31);
+     DECLARE PAYMENT             CURRENCY_T;
+
+     DECLARE MONTHLY_RATE        FLOAT DEC(15);
+     DECLARE RATE_FACTOR         FLOAT DEC(15);
+     DECLARE NUMERATOR           FLOAT DEC(15);
+     DECLARE DENOMINATOR         FLOAT DEC(15);
+
+     /* Monthly interest rate */
+     MONTHLY_RATE = ANNUAL_RATE / 12.0;
+
+     /* Payment = P * [r(1+r)^n] / [(1+r)^n - 1] */
+     
+     /* Calculate (1 + r) ^ n using EXP and LOG */
+     RATE_FACTOR = EXP(TERM_MONTHS * LOG(1 + MONTHLY_RATE));
+
+     NUMERATOR = MONTHLY_RATE * RATE_FACTOR;
+     DENOMINATOR = RATE_FACTOR - 1.0;
+
+     IF ABS(DENOMINATOR) < 0.000001 THEN DO;
+       /* Avoid division by near-zero */
+       PAYMENT = PRINCIPAL / TERM_MONTHS;
+     END;
+     ELSE DO;
+       PAYMENT = PRINCIPAL * (NUMERATOR / DENOMINATOR);
+       /* Round to nearest cent using ROUND */
+       PAYMENT = ROUND(PAYMENT, 2);
+     END;
+
+     PUT SKIP LIST('Mortgage Payment Calculated:');
+     PUT SKIP LIST('  Principal: $' || TRIM(PRINCIPAL));
+     PUT SKIP LIST('  Rate: ' || TRIM(ANNUAL_RATE * 100) || '%');
+     PUT SKIP LIST('  Term: ' || TRIM(TERM_MONTHS) || ' months');
+     PUT SKIP LIST('  Payment: $' || TRIM(PAYMENT));
+
+   END CALCULATE_MORTGAGE_PAYMENT;
+
+   /*-----------------------------------------------------------------*/
+   /* Build Amortization Schedule - Array operations demo             */
+   /*-----------------------------------------------------------------*/
+   BUILD_AMORTIZATION_SCHEDULE: PROCEDURE(PRINCIPAL, ANNUAL_RATE, 
+                                           TERM_MONTHS);
+     DECLARE PRINCIPAL           CURRENCY_T;
+     DECLARE ANNUAL_RATE         RATE_T;
+     DECLARE TERM_MONTHS         FIXED BIN(31);
+
+     DECLARE MONTHLY_RATE        FLOAT DEC(15);
+     DECLARE BALANCE             CURRENCY_T;
+     DECLARE INTEREST_THIS_PMT   CURRENCY_T;
+     DECLARE PRINCIPAL_THIS_PMT  CURRENCY_T;
+     DECLARE I                   FIXED BIN(31);
+
+     MONTHLY_RATE = ANNUAL_RATE / 12.0;
+     BALANCE = PRINCIPAL;
+
+     /* Calculate payment */
+     CALL CALCULATE_MORTGAGE_PAYMENT(PRINCIPAL, ANNUAL_RATE, 
+                                      TERM_MONTHS, MONTHLY_PAYMENT);
+
+     /* Build schedule using DO loop */
+     DO I = 1 TO TERM_MONTHS;
+       AMORT_SCHEDULE(I).PAYMENT_NUM = I;
+
+       /* Interest for this payment */
+       INTEREST_THIS_PMT = BALANCE * MONTHLY_RATE;
+       INTEREST_THIS_PMT = ROUND(INTEREST_THIS_PMT, 2);
+
+       /* Principal portion */
+       PRINCIPAL_THIS_PMT = MONTHLY_PAYMENT - INTEREST_THIS_PMT;
+       PRINCIPAL_THIS_PMT = MAX(0, PRINCIPAL_THIS_PMT);
+
+       /* Update balance */
+       BALANCE = BALANCE - PRINCIPAL_THIS_PMT;
+       BALANCE = MAX(0, BALANCE);
+
+       /* Store in array */
+       AMORT_SCHEDULE(I).PRINCIPAL_PART = PRINCIPAL_THIS_PMT;
+       AMORT_SCHEDULE(I).INTEREST_PART = INTEREST_THIS_PMT;
+       AMORT_SCHEDULE(I).REMAINING_BALANCE = BALANCE;
+
+       /* Break early if paid off */
+       IF BALANCE <= 0 THEN LEAVE;
+     END;
+
+     /* Calculate total interest using SUM array built-in */
+     TOTAL_INTEREST = SUM(AMORT_SCHEDULE(*).INTEREST_PART, 1, I-1);
+
+     PUT SKIP LIST('Amortization Schedule Generated:');
+     PUT SKIP LIST('  Total Payments: ' || TRIM(I-1));
+     PUT SKIP LIST('  Total Interest: $' || TRIM(TOTAL_INTEREST));
+     PUT SKIP LIST('  Total Cost: $' || TRIM(PRINCIPAL + TOTAL_INTEREST));
+
+     /* Display first few payments */
+     PUT SKIP(2) LIST('First 5 Payments:');
+     DO I = 1 TO MIN(5, TERM_MONTHS);
+       PUT SKIP LIST('  Payment ' || TRIM(I) || 
+                    ': Principal=$' || TRIM(AMORT_SCHEDULE(I).PRINCIPAL_PART) ||
+                    ' Interest=$' || TRIM(AMORT_SCHEDULE(I).INTEREST_PART) ||
+                    ' Balance=$' || TRIM(AMORT_SCHEDULE(I).REMAINING_BALANCE));
+     END;
+
+   END BUILD_AMORTIZATION_SCHEDULE;
+
+   /*-----------------------------------------------------------------*/
+   /* Calculate Interest Accrual - Date/time functions demo           */
+   /*-----------------------------------------------------------------*/
+   CALCULATE_INTEREST_ACCRUAL: PROCEDURE RETURNS(CURRENCY_T);
+     DECLARE ACCRUED_INTEREST    CURRENCY_T;
+     DECLARE LAST_INT_DATE       DATE_T;
+     DECLARE CURRENT_DATE        DATE_T;
+     DECLARE DAYS_ELAPSED        FIXED BIN(31);
+     DECLARE DAILY_RATE          FLOAT DEC(15);
+     DECLARE ANNUAL_RATE         RATE_T;
+
+     CURRENT_DATE = GET_CURRENT_DATE();
+     LAST_INT_DATE = ACCOUNT_MASTER.DATES.LAST_INTEREST_DT;
+
+     /* Calculate days between dates using DATE_DIFF_DAYS */
+     DAYS_ELAPSED = DATE_DIFF_DAYS(LAST_INT_DATE, CURRENT_DATE);
+
+     IF DAYS_ELAPSED <= 0 THEN
+       RETURN (0.00);
+
+     ANNUAL_RATE = ACCOUNT_MASTER.RATES_AND_LIMITS.INTEREST_RATE;
+
+     /* Daily rate = annual rate / 365 */
+     DAILY_RATE = ANNUAL_RATE / 365.0;
+
+     /* Simple interest calculation */
+     ACCRUED_INTEREST = ACCOUNT_MASTER.BALANCES.CURRENT_BALANCE * 
+                        DAILY_RATE * DAYS_ELAPSED;
+
+     ACCRUED_INTEREST = ROUND(ACCRUED_INTEREST, 2);
+
+     PUT SKIP LIST('Interest Accrual:');
+     PUT SKIP LIST('  Days elapsed: ' || TRIM(DAYS_ELAPSED));
+     PUT SKIP LIST('  Balance: $' ||
+                   TRIM(ACCOUNT_MASTER.BALANCES.CURRENT_BALANCE));
+     PUT SKIP LIST('  Rate: ' || TRIM(ANNUAL_RATE * 100) || '%');
+     PUT SKIP LIST('  Accrued: $' || TRIM(ACCRUED_INTEREST));
+
+     RETURN (ACCRUED_INTEREST);
+
+   END CALCULATE_INTEREST_ACCRUAL;
+
+   /*-----------------------------------------------------------------*/
+   /* Set Statement Cycle - Date arithmetic demo                      */
+   /*-----------------------------------------------------------------*/
+   SET_STATEMENT_CYCLE: PROCEDURE;
+     DECLARE OPENED_DATE         DATE_T;
+     DECLARE NEXT_STATEMENT      DATE_T;
+     DECLARE CYCLE_DAY           FIXED BIN(31);
+
+     OPENED_DATE = ACCOUNT_MASTER.DATES.OPENED_DATE;
+
+     /* Extract day of month from opened date */
+     /* For simplicity, using MOD for demo */
+     CYCLE_DAY = MOD(ACCOUNT_MASTER.CUSTOMER_ID, 28) + 1;
+     STATEMENT_CYCLE_DAY = CYCLE_DAY;
+
+     /* Next statement is 30 days from opening */
+     NEXT_STATEMENT = ADD_DAYS_TO_DATE(OPENED_DATE, 30);
+     ACCOUNT_MASTER.DATES.NEXT_STATEMENT_DT = NEXT_STATEMENT;
+
+     PUT SKIP LIST('Statement cycle set to day ' || TRIM(CYCLE_DAY));
+     PUT SKIP LIST('Next statement date: ' || NEXT_STATEMENT);
+
+   END SET_STATEMENT_CYCLE;
+
+   /*-----------------------------------------------------------------*/
+   /* Process Transactions in Area - AREA/BASED/OFFSET demo          */
+   /*-----------------------------------------------------------------*/
+   PROCESS_TRANSACTION_BATCH: PROCEDURE;
+     DECLARE FIRST_TXN_OFFSET    OFFSET(TXN_BUFFER_AREA);
+     DECLARE CURRENT_OFFSET      OFFSET(TXN_BUFFER_AREA);
+     DECLARE PREV_OFFSET         OFFSET(TXN_BUFFER_AREA);
+     DECLARE BATCH_COUNT         FIXED BIN(31);
+     DECLARE BATCH_TOTAL         CURRENCY_T;
+
+     FIRST_TXN_OFFSET = NULL();
+     BATCH_COUNT = 0;
+     BATCH_TOTAL = 0.00;
+
+     /* Allocate transactions in area - DO WHILE demo */
+     DO WHILE (BATCH_COUNT < 10 & ALLOCATION(TXN_BUFFER_AREA) < 60000);
+       
+       /* Allocate in area */
+       ALLOCATE TXN_NODE IN(TXN_BUFFER_AREA) SET(TXN_BUFFER_PTR);
+
+       /* Set offset to this node */
+       CURRENT_OFFSET = OFFSET(TXN_BUFFER_PTR, TXN_BUFFER_AREA);
+
+       /* Link to previous if exists */
+       IF BATCH_COUNT = 0 THEN
+         FIRST_TXN_OFFSET = CURRENT_OFFSET;
+       ELSE
+         PREV_OFFSET -> TXN_NODE.NEXT_TXN_OFFSET = CURRENT_OFFSET;
+
+       /* Populate transaction data */
+       TXN_NODE.TXN_DATA.TRANSACTION_ID = 'TXN' || TRIM(BATCH_COUNT + 1);
+       TXN_NODE.TXN_DATA.TXN_AMOUNT = 100.00 + (BATCH_COUNT * 25.00);
+       TXN_NODE.TXN_DATA.TXN_TYPE = TXN_DEBIT;
+       TXN_NODE.NEXT_TXN_OFFSET = NULL();
+
+       BATCH_TOTAL = BATCH_TOTAL + TXN_NODE.TXN_DATA.TXN_AMOUNT;
+       BATCH_COUNT = BATCH_COUNT + 1;
+       PREV_OFFSET = CURRENT_OFFSET;
+
+     END;
+
+     PUT SKIP LIST('Transaction batch created:');
+     PUT SKIP LIST('  Count: ' || TRIM(BATCH_COUNT));
+     PUT SKIP LIST('  Total: $' || TRIM(BATCH_TOTAL));
+     PUT SKIP LIST('  Area used: ' || 
+                   TRIM(ALLOCATION(TXN_BUFFER_AREA)) || ' bytes');
+
+     /* Traverse chain using OFFSET */
+     CALL TRAVERSE_TRANSACTION_CHAIN(FIRST_TXN_OFFSET);
+
+   END PROCESS_TRANSACTION_BATCH;
+
+   /*-----------------------------------------------------------------*/
+   /* Traverse Transaction Chain - OFFSET navigation                  */
+   /*-----------------------------------------------------------------*/
+   TRAVERSE_TRANSACTION_CHAIN: PROCEDURE(START_OFFSET);
+     DECLARE START_OFFSET        OFFSET(TXN_BUFFER_AREA);
+     DECLARE CURRENT_OFFSET      OFFSET(TXN_BUFFER_AREA);
+     DECLARE COUNT               FIXED BIN(31);
+
+     CURRENT_OFFSET = START_OFFSET;
+     COUNT = 0;
+
+     PUT SKIP LIST('Traversing transaction chain:');
+
+     /* DO WHILE with pointer check */
+     DO WHILE (¬ISNULL(CURRENT_OFFSET));
+       COUNT = COUNT + 1;
+
+       /* Set pointer from offset */
+       TXN_BUFFER_PTR = POINTER(CURRENT_OFFSET, TXN_BUFFER_AREA);
+
+       PUT SKIP LIST('  Txn ' || TRIM(COUNT) || ': ' ||
+                    TRIM(TXN_NODE.TXN_DATA.TRANSACTION_ID) ||
+                    ' Amount: $' || TRIM(TXN_NODE.TXN_DATA.TXN_AMOUNT));
+
+       /* Move to next */
+       CURRENT_OFFSET = TXN_NODE.NEXT_TXN_OFFSET;
+
+       /* Safety check - avoid infinite loop */
+       IF COUNT > 1000 THEN DO;
+         PUT SKIP LIST('WARNING: Chain traversal limit exceeded');
+         LEAVE;
+       END;
+     END;
+
+     PUT SKIP LIST('Chain traversal complete: ' || TRIM(COUNT) || 
+                   ' transactions');
+
+   END TRAVERSE_TRANSACTION_CHAIN;
+
+   /*-----------------------------------------------------------------*/
+   /* Check Overdraft Limit - SIGNAL demonstration                    */
+   /*-----------------------------------------------------------------*/
+   CHECK_OVERDRAFT: PROCEDURE(DEBIT_AMOUNT);
+     DECLARE DEBIT_AMOUNT        CURRENCY_T;
+     DECLARE NEW_BALANCE         CURRENCY_T;
+     DECLARE OVERDRAFT_AMT       CURRENCY_T;
+
+     NEW_BALANCE = ACCOUNT_MASTER.BALANCES.AVAILABLE_BALANCE - DEBIT_AMOUNT;
+
+     IF NEW_BALANCE < 0 THEN DO;
+       OVERDRAFT_AMT = ABS(NEW_BALANCE);
+
+       IF OVERDRAFT_AMT > ACCOUNT_MASTER.RATES_AND_LIMITS.OVERDRAFT_LIMIT THEN DO;
+         /* Signal custom condition */
+         REQUESTED_OVERDRAFT = OVERDRAFT_AMT;
+         ACCT_OVERDRAFT_LIMIT = 
+           ACCOUNT_MASTER.RATES_AND_LIMITS.OVERDRAFT_LIMIT;
+         SIGNAL OVERDRAFT_LIMIT;
+       END;
+       ELSE DO;
+         /* Within limit - assess fee */
+         PUT SKIP LIST('Overdraft within limit: $' || TRIM(OVERDRAFT_AMT));
+       END;
+     END;
+
+   END CHECK_OVERDRAFT;
+
+   /*-----------------------------------------------------------------*/
+   /* Stub procedures for completeness                               */
+   /*-----------------------------------------------------------------*/
+   INQUIRE_ACCOUNT: PROCEDURE;
+     PUT SKIP LIST('Account inquiry');
+   END INQUIRE_ACCOUNT;
+
+   UPDATE_ACCOUNT: PROCEDURE;
+     PUT SKIP LIST('Account update');
+   END UPDATE_ACCOUNT;
+
+   DELETE_ACCOUNT: PROCEDURE;
+     PUT SKIP LIST('Account delete');
+   END DELETE_ACCOUNT;
+
+   DB_INSERT_ACCOUNT: PROCEDURE;
+     PUT SKIP LIST('DB insert account');
+   END DB_INSERT_ACCOUNT;
+
+   HANDLE_INVALID_FUNCTION: PROCEDURE;
+     PUT SKIP LIST('Invalid function');
+   END HANDLE_INVALID_FUNCTION;
+
+   CLEANUP_MODULE: PROCEDURE;
+     /* Free any remaining controlled storage */
+     DO WHILE (ALLOCATION(ACCOUNT_CONTEXT) > 0);
+       FREE ACCOUNT_CONTEXT;
+       CONTEXT_DEPTH = CONTEXT_DEPTH - 1;
+     END;
+
+     PUT SKIP LIST('BNKACCT cleanup complete');
+   END CLEANUP_MODULE;
+
+ END BNKACCT;

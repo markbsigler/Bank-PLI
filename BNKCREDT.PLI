@@ -1,0 +1,476 @@
+ /*********************************************************************/
+ /*  BNKCREDT.PLI - Credit Scoring Engine (Advanced Features)        */
+ /*                                                                   */
+ /*  Demonstrates:                                                   */
+ /*    - TASK/EVENT/WAIT/COMPLETION for multitasking                 */
+ /*    - DETACH for fire-and-forget tasks                            */
+ /*    - FETCH/RELEASE for dynamic program loading                   */
+ /*    - RECURSIVE procedures                                        */
+ /*    - AUTOMATIC/STATIC/CONTROLLED/BASED storage classes           */
+ /*    - INITIAL and INITIAL CALL attributes                         */
+ /*    - EXTERNAL vs INTERNAL procedures                             */
+ /*    - BUILTIN attribute                                          */
+ /*    - RETURNS with structure type                                */
+ /*    - FLOAT DECIMAL vs FLOAT BINARY precision                     */
+ /*    - COMPLEX arithmetic (REAL, IMAG, CONJG)                      */
+ /*********************************************************************/
+
+ %PROCESS RULES(IBM) MARGINS(2,72) SOURCE XREF;
+ %PROCESS LIMITS(FIXEDDEC(15,2));
+ %PROCESS SQL TASK;
+
+ BNKCREDT: PROCEDURE OPTIONS(MAIN, REENTRANT);
+
+   %INCLUDE BNKPKG;
+   %INCLUDE CUSTSTR;
+   %INCLUDE ACCTSTR;
+   %INCLUDE SQLCA;
+   %INCLUDE CICSDEF;
+   %INCLUDE ERRHAND;
+
+   /* Credit scoring request */
+   DECLARE
+     1 CREDIT_REQUEST,
+       2 CUSTOMER_ID           CUST_NUM_T,
+       2 REQUESTED_AMOUNT      CURRENCY_T,
+       2 LOAN_TYPE             CHAR(20) VARYING,
+       2 REQUEST_DATE          DATE_T,
+       2 RUSH_SCORING          BIT(1);
+
+   /* Credit scoring result */
+   DECLARE
+     1 CREDIT_RESULT,
+       2 CREDIT_SCORE          FIXED DEC(3),
+       2 SCORE_FACTORS(10),
+         3 FACTOR_NAME         CHAR(30) VARYING,
+         3 FACTOR_WEIGHT       FLOAT DEC(12),
+         3 FACTOR_VALUE        FLOAT DEC(12),
+         3 FACTOR_SCORE        FIXED DEC(3),
+       2 FACTOR_COUNT          FIXED BIN(15),
+       2 RECOMMENDATION        CHAR(1),  /* A/C/D = Approve/Conditional/Deny */
+       2 CONFIDENCE_LEVEL      FLOAT DEC(6),
+       2 BUREAU_RESPONSES      FIXED BIN(15),
+       2 PROCESSING_TIME_MS    FIXED BIN(31);
+
+   /* Multitasking control - EVENT variables */
+   DECLARE BUREAU_EVENTS(5) EVENT;
+   DECLARE BUREAU_COMPLETE(5) BIT(1);
+   DECLARE BUREAU_SCORES(5) FIXED DEC(3);
+   
+   /* Statistical tracking - STATIC with INITIAL */
+   DECLARE TOTAL_REQUESTS      FIXED BIN(31) STATIC INITIAL(0);
+   DECLARE TOTAL_APPROVALS     FIXED BIN(31) STATIC INITIAL(0);
+   DECLARE TOTAL_DENIALS       FIXED BIN(31) STATIC INITIAL(0);
+   DECLARE ENGINE_INITIALIZED  BIT(1) STATIC INITIAL('0'B);
+
+   /* Scoring weights - FLOAT DEC for high precision */
+   DECLARE PAYMENT_HISTORY_WT  FLOAT DEC(15) INIT(0.35);
+   DECLARE DEBT_RATIO_WT       FLOAT DEC(15) INIT(0.30);
+   DECLARE CREDIT_AGE_WT       FLOAT DEC(15) INIT(0.15);
+   DECLARE NEW_CREDIT_WT       FLOAT DEC(15) INIT(0.10);
+   DECLARE CREDIT_MIX_WT       FLOAT DEC(15) INIT(0.10);
+
+   /* CONTROLLED storage for scoring context stack */
+   DECLARE SCORING_CONTEXT CONTROLLED;
+   DECLARE
+     1 SCORING_CONTEXT,
+       2 CONTEXT_LEVEL       FIXED BIN(15),
+       2 CUSTOMER_DATA       LIKE CUSTOMER_MASTER,
+       2 ACCOUNT_COUNT       FIXED BIN(15),
+       2 TOTAL_BALANCE       CURRENCY_T,
+       2 PARENT_CONTEXT_PTR  POINTER;
+
+   /* BASED structure for historical score chain */
+   DECLARE SCORE_HISTORY_PTR   POINTER;
+   DECLARE
+     1 SCORE_HISTORY_NODE BASED(SCORE_HISTORY_PTR),
+       2 SCORE_DATE          DATE_T,
+       2 SCORE_VALUE         FIXED DEC(3),
+       2 SCORE_REASON        CHAR(50) VARYING,
+       2 NEXT_SCORE_PTR      POINTER;
+
+   /* Entry point for dynamically loaded module - ENTRY declaration */
+   DECLARE EXTERNAL_SCORER ENTRY(CUST_NUM_T, CURRENCY_T)
+     RETURNS(FIXED DEC(3))
+     EXTERNAL;
+
+   /* Working variables */
+   DECLARE CONTEXT_DEPTH       FIXED BIN(15) INIT(0);
+   DECLARE START_TIME          FIXED BIN(31);
+   DECLARE END_TIME            FIXED BIN(31);
+   DECLARE I                   FIXED BIN(15);
+
+   /*-----------------------------------------------------------------*/
+   /* Main Credit Scoring Entry Point                                 */
+   /*-----------------------------------------------------------------*/
+
+   /* One-time initialization using INITIAL CALL */
+   IF ¬ENGINE_INITIALIZED THEN
+     CALL INITIALIZE_SCORING_ENGINE() INITIAL;
+
+   TOTAL_REQUESTS = TOTAL_REQUESTS + 1;
+
+   /* Build scoring request */
+   CREDIT_REQUEST.CUSTOMER_ID = 1000001;  /* Example */
+   CREDIT_REQUEST.REQUESTED_AMOUNT = 25000.00;
+   CREDIT_REQUEST.LOAN_TYPE = 'Auto Loan';
+   CREDIT_REQUEST.REQUEST_DATE = GET_CURRENT_DATE();
+   CREDIT_REQUEST.RUSH_SCORING = '0'B;
+
+   START_TIME = SECS(DATETIME());
+
+   /* Execute scoring */
+   CALL SCORE_CUSTOMER();
+
+   END_TIME = SECS(DATETIME());
+   CREDIT_RESULT.PROCESSING_TIME_MS = (END_TIME - START_TIME) * 1000;
+
+   /* Display result */
+   CALL DISPLAY_CREDIT_RESULT();
+
+   /* Asynchronously log audit - DETACH demo */
+   CALL LOG_CREDIT_DECISION() TASK;
+
+   EXEC CICS RETURN;
+
+   /*-----------------------------------------------------------------*/
+   /* Initialize Scoring Engine - INITIAL CALL demo                   */
+   /*-----------------------------------------------------------------*/
+   INITIALIZE_SCORING_ENGINE: PROCEDURE;
+     
+     PUT SKIP LIST('Initializing credit scoring engine...');
+     
+     /* Initialize bureau event variables */
+     DO I = 1 TO 5;
+       BUREAU_COMPLETE(I) = '0'B;
+       BUREAU_SCORES(I) = 0;
+     END;
+
+     /* Load external scoring module if available */
+     /* FETCH demonstrates dynamic program load */
+     /* Commented out as actual module doesn't exist */
+     /* FETCH EXTERNAL_SCORER; */
+
+     ENGINE_INITIALIZED = '1'B;
+
+     PUT SKIP LIST('Credit scoring engine initialized');
+
+   END INITIALIZE_SCORING_ENGINE;
+
+   /*-----------------------------------------------------------------*/
+   /* Score Customer - Multitasking demonstration                     */
+   /*-----------------------------------------------------------------*/
+   SCORE_CUSTOMER: PROCEDURE;
+     DECLARE BUREAU_NAMES(5) CHAR(20) VARYING STATIC INIT(
+       'Equifax', 'Experian', 'TransUnion', 'Innovis', 'FICO');
+     
+     DECLARE RESPONSE_COUNT FIXED BIN(15);
+     DECLARE QUORUM_NEEDED FIXED BIN(15) INIT(3);
+     DECLARE COMPOSITE_SCORE FIXED DEC(3);
+
+     /* Push scoring context */
+     ALLOCATE SCORING_CONTEXT;
+     CONTEXT_DEPTH = CONTEXT_DEPTH + 1;
+     SCORING_CONTEXT.CONTEXT_LEVEL = CONTEXT_DEPTH;
+
+     /* Retrieve customer data */
+     CALL LOAD_CUSTOMER_DATA();
+
+     /* Fan out to credit bureaus using multitasking */
+     IF CREDIT_REQUEST.RUSH_SCORING THEN DO;
+       
+       PUT SKIP LIST('Starting parallel credit bureau queries...');
+
+       /* Start tasks for each bureau */
+       DO I = 1 TO 5;
+         /* Launch tasks with PRIORITY - higher for primary bureaus */
+         IF I <= 2 THEN
+           CALL QUERY_CREDIT_BUREAU(I, BUREAU_NAMES(I))
+             TASK EVENT(BUREAU_EVENTS(I)) PRIORITY(10);
+         ELSE IF I <= 4 THEN
+           CALL QUERY_CREDIT_BUREAU(I, BUREAU_NAMES(I))
+             TASK EVENT(BUREAU_EVENTS(I)) PRIORITY(8);
+         ELSE
+           CALL QUERY_CREDIT_BUREAU(I, BUREAU_NAMES(I))
+             TASK EVENT(BUREAU_EVENTS(I)) PRIORITY(5);
+       END;
+
+       /* Wait for quorum (3 out of 5 responses) */
+       RESPONSE_COUNT = 0;
+
+       /* Check ATTACHED status before waiting */
+       DO I = 1 TO 5;
+         IF ATTACHED(BUREAU_EVENTS(I)) THEN
+           PUT SKIP LIST('  Bureau task ' || TRIM(I) || ' still running');
+       END;
+       
+       DO WHILE (RESPONSE_COUNT < QUORUM_NEEDED);
+         /* Check each event */
+         DO I = 1 TO 5 WHILE (RESPONSE_COUNT < QUORUM_NEEDED);
+           IF ¬BUREAU_COMPLETE(I) THEN DO;
+             /* Non-blocking check using COMPLETION */
+             IF COMPLETION(BUREAU_EVENTS(I)) THEN DO;
+               BUREAU_COMPLETE(I) = '1'B;
+               RESPONSE_COUNT = RESPONSE_COUNT + 1;
+               
+               PUT SKIP LIST('  Received response from ' || 
+                            BUREAU_NAMES(I) ||
+                            ': ' || TRIM(BUREAU_SCORES(I)));
+             END;
+           END;
+         END;
+
+         /* Brief wait if not enough responses yet */
+         IF RESPONSE_COUNT < QUORUM_NEEDED THEN
+           CALL DELAY_MILLISECONDS(100);
+       END;
+
+       PUT SKIP LIST('Quorum achieved with ' || TRIM(RESPONSE_COUNT) ||
+                    ' responses');
+
+       /* Calculate composite score from bureau responses */
+       COMPOSITE_SCORE = 0;
+       RESPONSE_COUNT = 0;
+       
+       DO I = 1 TO 5;
+         IF BUREAU_COMPLETE(I) THEN DO;
+           COMPOSITE_SCORE = COMPOSITE_SCORE + BUREAU_SCORES(I);
+           RESPONSE_COUNT = RESPONSE_COUNT + 1;
+         END;
+       END;
+
+       IF RESPONSE_COUNT > 0 THEN
+         COMPOSITE_SCORE = COMPOSITE_SCORE / RESPONSE_COUNT;
+       ELSE
+         COMPOSITE_SCORE = 0;
+
+     END;
+     ELSE DO;
+       /* Sequential scoring - direct calculation */
+       COMPOSITE_SCORE = CALCULATE_CREDIT_SCORE();
+     END;
+
+     CREDIT_RESULT.CREDIT_SCORE = COMPOSITE_SCORE;
+     CREDIT_RESULT.BUREAU_RESPONSES = RESPONSE_COUNT;
+
+     /* Apply business rules recursively */
+     CALL APPLY_SCORING_RULES(COMPOSITE_SCORE, 1);
+
+     /* Pop context */
+     FREE SCORING_CONTEXT;
+     CONTEXT_DEPTH = CONTEXT_DEPTH - 1;
+
+   END SCORE_CUSTOMER;
+
+   /*-----------------------------------------------------------------*/
+   /* Query Credit Bureau - Subtask procedure                         */
+   /*-----------------------------------------------------------------*/
+   QUERY_CREDIT_BUREAU: PROCEDURE(BUREAU_ID, BUREAU_NAME);
+     DECLARE BUREAU_ID         FIXED BIN(15);
+     DECLARE BUREAU_NAME       CHAR(*) VARYING;
+     
+     DECLARE SIMULATED_DELAY   FIXED BIN(31);
+     DECLARE RANDOM_SCORE      FIXED DEC(3);
+     DECLARE RANDOM_VAL        FLOAT DEC(16);
+
+     /* Simulate variable bureau response time */
+     RANDOM_VAL = RANDOM();
+     SIMULATED_DELAY = FLOOR(RANDOM_VAL * 500) + 100;  /* 100-600ms */
+     
+     CALL DELAY_MILLISECONDS(SIMULATED_DELAY);
+
+     /* Generate simulated score 300-850 */
+     RANDOM_VAL = RANDOM();
+     RANDOM_SCORE = FLOOR(RANDOM_VAL * 550) + 300;
+     
+     BUREAU_SCORES(BUREAU_ID) = RANDOM_SCORE;
+
+     /* Task completes automatically, event is signaled */
+
+   END QUERY_CREDIT_BUREAU;
+
+   /*-----------------------------------------------------------------*/
+   /* Calculate Credit Score - RECURSIVE scoring tree traversal       */
+   /*-----------------------------------------------------------------*/
+   CALCULATE_CREDIT_SCORE: PROCEDURE RECURSIVE RETURNS(FIXED DEC(3));
+     DECLARE BASE_SCORE        FIXED DEC(3);
+     DECLARE PAYMENT_SCORE     FLOAT DEC(15);
+     DECLARE DEBT_SCORE        FLOAT DEC(15);
+     DECLARE AGE_SCORE         FLOAT DEC(15);
+     DECLARE TOTAL_SCORE       FLOAT DEC(15);
+     
+     /* Base score from customer credit history */
+     BASE_SCORE = SCORING_CONTEXT.CUSTOMER_DATA.FINANCIAL_INFO.CREDIT_SCORE;
+
+     IF BASE_SCORE = 0 THEN
+       BASE_SCORE = 650;  /* Default for new customers */
+
+     /* Calculate component scores - demonstrates FLOAT DEC precision */
+     PAYMENT_SCORE = FLOOR(BASE_SCORE * PAYMENT_HISTORY_WT);
+     DEBT_SCORE = FLOOR(BASE_SCORE * DEBT_RATIO_WT);
+     AGE_SCORE = FLOOR(BASE_SCORE * CREDIT_AGE_WT);
+
+     /* Combine weighted scores */
+     TOTAL_SCORE = PAYMENT_SCORE + DEBT_SCORE + AGE_SCORE;
+
+     /* Apply adjustment factors recursively for complex cases */
+     IF SCORING_CONTEXT.ACCOUNT_COUNT > 5 THEN DO;
+       /* Multiple accounts - recursive scoring for each */
+       DECLARE ADJUSTMENT FLOAT DEC(15);
+       
+       /* Recurse one level deeper (simplified) */
+       IF CONTEXT_DEPTH < 3 THEN DO;
+         ADJUSTMENT = CALCULATE_CREDIT_SCORE() * 0.1;
+         TOTAL_SCORE = TOTAL_SCORE + ADJUSTMENT;
+       END;
+     END;
+
+     /* Store factor details */
+     CREDIT_RESULT.FACTOR_COUNT = 3;
+     
+     CREDIT_RESULT.SCORE_FACTORS(1).FACTOR_NAME = 'Payment History';
+     CREDIT_RESULT.SCORE_FACTORS(1).FACTOR_WEIGHT = PAYMENT_HISTORY_WT;
+     CREDIT_RESULT.SCORE_FACTORS(1).FACTOR_SCORE = PAYMENT_SCORE;
+
+     CREDIT_RESULT.SCORE_FACTORS(2).FACTOR_NAME = 'Debt Ratio';
+     CREDIT_RESULT.SCORE_FACTORS(2).FACTOR_WEIGHT = DEBT_RATIO_WT;
+     CREDIT_RESULT.SCORE_FACTORS(2).FACTOR_SCORE = DEBT_SCORE;
+
+     CREDIT_RESULT.SCORE_FACTORS(3).FACTOR_NAME = 'Credit Age';
+     CREDIT_RESULT.SCORE_FACTORS(3).FACTOR_WEIGHT = CREDIT_AGE_WT;
+     CREDIT_RESULT.SCORE_FACTORS(3).FACTOR_SCORE = AGE_SCORE;
+
+     RETURN (FLOOR(TOTAL_SCORE));
+
+   END CALCULATE_CREDIT_SCORE;
+
+   /*-----------------------------------------------------------------*/
+   /* Apply Scoring Rules - RECURSIVE rule evaluation                 */
+   /*-----------------------------------------------------------------*/
+   APPLY_SCORING_RULES: PROCEDURE(SCORE, RULE_LEVEL) RECURSIVE;
+     DECLARE SCORE             FIXED DEC(3);
+     DECLARE RULE_LEVEL        FIXED BIN(15);
+
+     IF RULE_LEVEL > 5 THEN
+       RETURN;  /* Max recursion depth */
+
+     /* Decision logic */
+     IF SCORE >= 720 THEN DO;
+       CREDIT_RESULT.RECOMMENDATION = 'A';  /* Approve */
+       CREDIT_RESULT.CONFIDENCE_LEVEL = 0.95;
+       TOTAL_APPROVALS = TOTAL_APPROVALS + 1;
+     END;
+     ELSE IF SCORE >= 650 THEN DO;
+       CREDIT_RESULT.RECOMMENDATION = 'C';  /* Conditional */
+       CREDIT_RESULT.CONFIDENCE_LEVEL = 0.75;
+       
+       /* Apply additional rules recursively */
+       IF CREDIT_REQUEST.REQUESTED_AMOUNT < 10000.00 THEN
+         CALL APPLY_SCORING_RULES(SCORE + 20, RULE_LEVEL + 1);
+     END;
+     ELSE DO;
+       CREDIT_RESULT.RECOMMENDATION = 'D';  /* Deny */
+       CREDIT_RESULT.CONFIDENCE_LEVEL = 0.90;
+       TOTAL_DENIALS = TOTAL_DENIALS + 1;
+     END;
+
+   END APPLY_SCORING_RULES;
+
+   /*-----------------------------------------------------------------*/
+   /* Calculate Trend Using Complex Numbers - COMPLEX demo            */
+   /*-----------------------------------------------------------------*/
+   CALCULATE_CREDIT_TREND: PROCEDURE RETURNS(COMPLEX FLOAT DEC(15));
+     DECLARE TREND_VECTOR      COMPLEX FLOAT DEC(15);
+     DECLARE REAL_COMPONENT    FLOAT DEC(15);
+     DECLARE IMAG_COMPONENT    FLOAT DEC(15);
+     DECLARE I                 FIXED BIN(15);
+     DECLARE SCORE_HISTORY(12) FIXED DEC(3);  /* 12 months */
+
+     /* Initialize with sample history */
+     DO I = 1 TO 12;
+       SCORE_HISTORY(I) = 650 + (I * 5);  /* Upward trend */
+     END;
+
+     /* Calculate trend using Fourier-style transform */
+     REAL_COMPONENT = 0.0;
+     IMAG_COMPONENT = 0.0;
+
+     DO I = 1 TO 12;
+       REAL_COMPONENT = REAL_COMPONENT + 
+         (SCORE_HISTORY(I) * COS(2 * 3.14159 * I / 12));
+       IMAG_COMPONENT = IMAG_COMPONENT +
+         (SCORE_HISTORY(I) * SIN(2 * 3.14159 * I / 12));
+     END;
+
+     /* Build complex number */
+     TREND_VECTOR = COMPLEX(REAL_COMPONENT, IMAG_COMPONENT);
+
+     /* Extract components using REAL, IMAG built-ins */
+     PUT SKIP LIST('Trend analysis:');
+     PUT SKIP LIST('  Real component: ' || TRIM(REAL(TREND_VECTOR)));
+     PUT SKIP LIST('  Imaginary component: ' || TRIM(IMAG(TREND_VECTOR)));
+     PUT SKIP LIST('  Magnitude: ' || TRIM(ABS(TREND_VECTOR)));
+
+     /* Conjugate for phase inversion */
+     TREND_VECTOR = CONJG(TREND_VECTOR);
+
+     RETURN (TREND_VECTOR);
+
+   END CALCULATE_CREDIT_TREND;
+
+   /*-----------------------------------------------------------------*/
+   /* Display Credit Result                                           */
+   /*-----------------------------------------------------------------*/
+   DISPLAY_CREDIT_RESULT: PROCEDURE;
+     DECLARE I FIXED BIN(15);
+     
+     PUT SKIP(2) LIST('=== CREDIT SCORING RESULT ===');
+     PUT SKIP LIST('Customer ID: ' || TRIM(CREDIT_REQUEST.CUSTOMER_ID));
+     PUT SKIP LIST('Credit Score: ' || TRIM(CREDIT_RESULT.CREDIT_SCORE));
+     PUT SKIP LIST('Recommendation: ' || CREDIT_RESULT.RECOMMENDATION);
+     PUT SKIP LIST('Confidence: ' || 
+       TRIM(CREDIT_RESULT.CONFIDENCE_LEVEL * 100) || '%');
+     PUT SKIP LIST('Processing Time: ' || 
+       TRIM(CREDIT_RESULT.PROCESSING_TIME_MS) || 'ms');
+     PUT SKIP LIST('Bureau Responses: ' || 
+       TRIM(CREDIT_RESULT.BUREAU_RESPONSES));
+     
+     PUT SKIP(2) LIST('Score Factors:');
+     DO I = 1 TO CREDIT_RESULT.FACTOR_COUNT;
+       PUT SKIP LIST('  ' || 
+         TRIM(CREDIT_RESULT.SCORE_FACTORS(I).FACTOR_NAME) ||
+         ': ' || TRIM(CREDIT_RESULT.SCORE_FACTORS(I).FACTOR_SCORE) ||
+         ' (Weight: ' || 
+         TRIM(CREDIT_RESULT.SCORE_FACTORS(I).FACTOR_WEIGHT) || ')');
+     END;
+
+     PUT SKIP(2) LIST('Engine Statistics:');
+     PUT SKIP LIST('  Total Requests: ' || TRIM(TOTAL_REQUESTS));
+     PUT SKIP LIST('  Total Approvals: ' || TRIM(TOTAL_APPROVALS));
+     PUT SKIP LIST('  Total Denials: ' || TRIM(TOTAL_DENIALS));
+
+   END DISPLAY_CREDIT_RESULT;
+
+   /*-----------------------------------------------------------------*/
+   /* Helper Procedures                                               */
+   /*-----------------------------------------------------------------*/
+   LOAD_CUSTOMER_DATA: PROCEDURE;
+     /* Load customer details into context */
+     SCORING_CONTEXT.CUSTOMER_DATA.CUSTOMER_ID = 
+       CREDIT_REQUEST.CUSTOMER_ID;
+     SCORING_CONTEXT.CUSTOMER_DATA.FINANCIAL_INFO.CREDIT_SCORE = 700;
+     SCORING_CONTEXT.ACCOUNT_COUNT = 3;
+     SCORING_CONTEXT.TOTAL_BALANCE = 50000.00;
+   END LOAD_CUSTOMER_DATA;
+
+   LOG_CREDIT_DECISION: PROCEDURE;
+     /* Asynchronous audit logging - runs as detached task */
+     PUT SKIP LIST('Logging credit decision to audit trail...');
+   END LOG_CREDIT_DECISION;
+
+   DELAY_MILLISECONDS: PROCEDURE(MS);
+     DECLARE MS FIXED BIN(31);
+     /* Delay implementation - stub */
+   END DELAY_MILLISECONDS;
+
+ END BNKCREDT;

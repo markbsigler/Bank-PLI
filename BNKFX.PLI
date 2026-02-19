@@ -1,0 +1,381 @@
+ /*********************************************************************/
+ /*  BNKFX.PLI - Foreign Exchange and International Payments         */
+ /*                                                                   */
+ /*  Demonstrates:                                                   */
+ /*    - PICTURE with drift characters ($, Z, *, etc.)               */
+ /*    - WIDECHAR for Unicode/international text                     */
+ /*    - GRAPHIC for DBCS (Double-Byte Character Set)                */
+ /*    - BOOL built-in for bit operations                            */
+ /*    - BINARY/DECIMAL built-ins for representation conversion      */
+ /*    - RANK/COLLATE for character set operations                   */
+ /*    - Multiple-precision arithmetic (high-precision conversion)   */
+ /*********************************************************************/
+
+ %PROCESS RULES(IBM) MARGINS(2,72) SOURCE XREF;
+ %PROCESS PACKAGE AGGREGATE LIMITS(NAME(31));
+
+ BNKFX: PROCEDURE OPTIONS(MAIN, REENTRANT) REORDER;
+
+   /*-----------------------------------------------------------------*/
+   /* Include package and copybook definitions                        */
+   /*-----------------------------------------------------------------*/
+   %INCLUDE BNKPKG;
+   %INCLUDE TXNSTR;
+   %INCLUDE ERRHAND;
+
+   /*-----------------------------------------------------------------*/
+   /* International character support                                 */
+   /*-----------------------------------------------------------------*/
+   
+   /* WIDECHAR for Unicode customer names (UTF-16) */
+   DECLARE CUSTOMER_NAME_INTL     WIDECHAR(100) VARYING;
+   DECLARE BENEFICIARY_NAME       WIDECHAR(80) VARYING;
+   DECLARE PAYMENT_MEMO           WIDECHAR(140) VARYING;
+   
+   /* GRAPHIC for DBCS currency symbols and Asian characters */
+   DECLARE YEN_SYMBOL             GRAPHIC(1) INIT(G'¥');
+   DECLARE YUAN_SYMBOL            GRAPHIC(1) INIT(G'¥');
+   DECLARE EURO_SYMBOL            GRAPHIC(1) INIT(G'€');
+   DECLARE POUND_SYMBOL           GRAPHIC(1) INIT(G'£');
+   
+   /*-----------------------------------------------------------------*/
+   /* Currency conversion and rates                                   */
+   /*-----------------------------------------------------------------*/
+   
+   DECLARE 1 FX_RATE_TABLE(20),
+     2 FROM_CURRENCY         CHAR(3),        /* ISO 4217 code */
+     2 TO_CURRENCY           CHAR(3),
+     2 BID_RATE              FLOAT DEC(15),
+     2 ASK_RATE              FLOAT DEC(15),
+     2 SPREAD_BPS            FIXED DEC(7,2), /* Basis points */
+     2 LAST_UPDATE           TIMESTAMP_T,
+     2 RATE_FLAGS            BIT(8);         /* Using BOOL operations */
+
+   DECLARE 1 SWIFT_MESSAGE,
+     2 MESSAGE_TYPE          CHAR(3),        /* e.g., MT103 */
+     2 SENDER_BIC            CHAR(11),       /* Bank Identifier Code */
+     2 RECEIVER_BIC          CHAR(11),
+     2 AMOUNT                FIXED DEC(15,2),
+     2 CURRENCY              CHAR(3),
+     2 BENEFICIARY_NAME      WIDECHAR(70) VARYING,
+     2 REMITTANCE_INFO       WIDECHAR(140) VARYING,
+     2 VALIDATION_FLAGS      BIT(16);
+
+   /*-----------------------------------------------------------------*/
+   /* Advanced PICTURE formats for currency display                   */
+   /*-----------------------------------------------------------------*/
+   
+   DECLARE FORMATTED_AMOUNT       PIC '$$$,$$9.99CR';  /* Drift $ */
+   DECLARE CHECK_AMOUNT           PIC '****,**9.99';   /* Drift * */
+   DECLARE BALANCE_DISPLAY        PIC 'ZZZZ,ZZ9.99-';  /* Drift Z */
+   DECLARE INTEREST_RATE_PCT      PIC '.999V99%';      /* Percent */
+   DECLARE ACCOUNT_NUMBER_MASK    PIC 'XXXX-XXXX-XXXX-9999';
+
+   /*-----------------------------------------------------------------*/
+   /* Working storage                                                 */
+   /*-----------------------------------------------------------------*/
+   
+   DECLARE CONVERSION_RESULT      FLOAT DEC(15);
+   DECLARE VALIDATION_RESULT      BIT(1);
+   DECLARE BIC_VALIDATION_SCORE   FIXED BIN(15);
+
+   /*-----------------------------------------------------------------*/
+   /* Main Processing                                                 */
+   /*-----------------------------------------------------------------*/
+
+   PUT SKIP LIST('=== Foreign Exchange and International Payments ===');
+   
+   CALL DEMONSTRATE_PICTURE_DRIFT();
+   CALL DEMONSTRATE_WIDECHAR();
+   CALL DEMONSTRATE_GRAPHIC_DBCS();
+   CALL DEMONSTRATE_BOOL_OPERATIONS();
+   CALL DEMONSTRATE_RANK_COLLATE();
+   CALL DEMONSTRATE_BINARY_DECIMAL();
+   CALL PROCESS_SWIFT_PAYMENT();
+
+   PUT SKIP LIST('FX processing complete');
+
+   /*-----------------------------------------------------------------*/
+   /* Demonstrate PICTURE Drift Characters                            */
+   /*-----------------------------------------------------------------*/
+   DEMONSTRATE_PICTURE_DRIFT: PROCEDURE;
+     DECLARE AMOUNT FIXED DEC(15,2);
+     DECLARE NEG_AMOUNT FIXED DEC(15,2);
+     
+     PUT SKIP(2) LIST('--- PICTURE Drift Demo ---');
+     
+     /* Floating dollar sign - only significant digits get $ */
+     AMOUNT = 123.45;
+     FORMATTED_AMOUNT = AMOUNT;
+     PUT SKIP LIST('Drift $ (123.45): ' || FORMATTED_AMOUNT);
+     
+     AMOUNT = 12345.67;
+     FORMATTED_AMOUNT = AMOUNT;
+     PUT SKIP LIST('Drift $ (12345.67): ' || FORMATTED_AMOUNT);
+     
+     /* Credit/debit indicator */
+     NEG_AMOUNT = -456.78;
+     FORMATTED_AMOUNT = NEG_AMOUNT;
+     PUT SKIP LIST('Negative (CR): ' || FORMATTED_AMOUNT);
+     
+     /* Check printing with asterisk fill (prevent alteration) */
+     AMOUNT = 5000.00;
+     CHECK_AMOUNT = AMOUNT;
+     PUT SKIP LIST('Check amount (drift *): ' || CHECK_AMOUNT);
+     
+     /* Zero suppression with drift Z */
+     AMOUNT = 42.50;
+     BALANCE_DISPLAY = AMOUNT;
+     PUT SKIP LIST('Balance (drift Z): ' || BALANCE_DISPLAY);
+     
+     /* Interest rate percentage */
+     INTEREST_RATE_PCT = 0.0495;  /* 4.95% */
+     PUT SKIP LIST('Interest rate: ' || INTEREST_RATE_PCT);
+
+   END DEMONSTRATE_PICTURE_DRIFT;
+
+   /*-----------------------------------------------------------------*/
+   /* Demonstrate WIDECHAR (Unicode support)                          */
+   /*-----------------------------------------------------------------*/
+   DEMONSTRATE_WIDECHAR: PROCEDURE;
+     DECLARE NAME_LENGTH FIXED BIN(31);
+     
+     PUT SKIP(2) LIST('--- WIDECHAR Unicode Demo ---');
+     
+     /* International customer names */
+     CUSTOMER_NAME_INTL = 'François Müller';
+     PUT SKIP LIST('Customer: ' || CUSTOMER_NAME_INTL);
+     
+     BENEFICIARY_NAME = '山田太郎';  /* Japanese: Yamada Taro */
+     PUT SKIP LIST('Beneficiary: ' || BENEFICIARY_NAME);
+     
+     PAYMENT_MEMO = 'Payment for services - 服务付款';
+     PUT SKIP LIST('Memo: ' || PAYMENT_MEMO);
+     
+     /* WIDECHAR length operations */
+     NAME_LENGTH = LENGTH(CUSTOMER_NAME_INTL);
+     PUT SKIP LIST('Name length: ' || TRIM(NAME_LENGTH) || ' characters');
+     
+     /* WIDECHAR concatenation and substring */
+     CUSTOMER_NAME_INTL = 'Dr. ' || CUSTOMER_NAME_INTL;
+     PUT SKIP LIST('Updated: ' || CUSTOMER_NAME_INTL);
+
+   END DEMONSTRATE_WIDECHAR;
+
+   /*-----------------------------------------------------------------*/
+   /* Demonstrate GRAPHIC (DBCS double-byte characters)               */
+   /*-----------------------------------------------------------------*/
+   DEMONSTRATE_GRAPHIC_DBCS: PROCEDURE;
+     DECLARE CURRENCY_DISPLAY GRAPHIC(50) VARYING;
+     DECLARE AMOUNT_VALUE FIXED DEC(15,2);
+     
+     PUT SKIP(2) LIST('--- GRAPHIC DBCS Demo ---');
+     
+     /* Display amounts with Asian currency symbols */
+     AMOUNT_VALUE = 100000.00;
+     
+     PUT SKIP LIST('Yen symbol: ' || YEN_SYMBOL);
+     PUT SKIP LIST('Yuan symbol: ' || YUAN_SYMBOL);
+     PUT SKIP LIST('Euro symbol: ' || EURO_SYMBOL);
+     PUT SKIP LIST('Pound symbol: ' || POUND_SYMBOL);
+     
+     /* Build currency display with GRAPHIC concatenation */
+     CURRENCY_DISPLAY = YEN_SYMBOL || G'100,000.00';
+     PUT SKIP LIST('Japanese Yen: ' || CURRENCY_DISPLAY);
+     
+     CURRENCY_DISPLAY = EURO_SYMBOL || G'85,000.00';
+     PUT SKIP LIST('Euro: ' || CURRENCY_DISPLAY);
+
+   END DEMONSTRATE_GRAPHIC_DBCS;
+
+   /*-----------------------------------------------------------------*/
+   /* Demonstrate BOOL Built-in (Bit operations)                      */
+   /*-----------------------------------------------------------------*/
+   DEMONSTRATE_BOOL_OPERATIONS: PROCEDURE;
+     DECLARE FLAGS_A BIT(8) INIT('10101010'B);
+     DECLARE FLAGS_B BIT(8) INIT('11001100'B);
+     DECLARE RESULT_AND BIT(8);
+     DECLARE RESULT_OR BIT(8);
+     DECLARE RESULT_XOR BIT(8);
+     DECLARE RESULT_NOT BIT(8);
+     
+     PUT SKIP(2) LIST('--- BOOL Built-in Demo ---');
+     
+     /* Bitwise AND */
+     RESULT_AND = BOOL(FLAGS_A, FLAGS_B, '0001'B);  /* AND operation */
+     PUT SKIP LIST('AND: ' || RESULT_AND);
+     
+     /* Bitwise OR */
+     RESULT_OR = BOOL(FLAGS_A, FLAGS_B, '0111'B);   /* OR operation */
+     PUT SKIP LIST('OR: ' || RESULT_OR);
+     
+     /* Bitwise XOR */
+     RESULT_XOR = BOOL(FLAGS_A, FLAGS_B, '0110'B);  /* XOR operation */
+     PUT SKIP LIST('XOR: ' || RESULT_XOR);
+     
+     /* Bitwise NOT (complement) */
+     RESULT_NOT = BOOL(FLAGS_A, FLAGS_A, '1100'B);  /* NOT operation */
+     PUT SKIP LIST('NOT: ' || RESULT_NOT);
+     
+     /* Use BOOL for flag manipulation in FX rate table */
+     FX_RATE_TABLE(1).RATE_FLAGS = '00000001'B;  /* Active flag */
+     FX_RATE_TABLE(2).RATE_FLAGS = '00000010'B;  /* Stale flag */
+     
+     /* Combine flags using BOOL */
+     RESULT_OR = BOOL(FX_RATE_TABLE(1).RATE_FLAGS,
+                      FX_RATE_TABLE(2).RATE_FLAGS,
+                      '0111'B);  /* OR to merge flags */
+     PUT SKIP LIST('Combined FX flags: ' || RESULT_OR);
+
+   END DEMONSTRATE_BOOL_OPERATIONS;
+
+   /*-----------------------------------------------------------------*/
+   /* Demonstrate RANK and COLLATE (Character set operations)         */
+   /*-----------------------------------------------------------------*/
+   DEMONSTRATE_RANK_COLLATE: PROCEDURE;
+     DECLARE BIC_CODE CHAR(11);
+     DECLARE CHAR_POS FIXED BIN(15);
+     DECLARE CHAR_VAL CHAR(1);
+     DECLARE CHECKSUM FIXED BIN(31);
+     DECLARE I FIXED BIN(15);
+     
+     PUT SKIP(2) LIST('--- RANK/COLLATE Demo ---');
+     
+     /* Validate SWIFT BIC code using character positions */
+     BIC_CODE = 'CHASUS33XXX';  /* Chase Bank, US */
+     
+     PUT SKIP LIST('Validating BIC: ' || BIC_CODE);
+     
+     /* RANK returns position of character in collating sequence */
+     CHECKSUM = 0;
+     DO I = 1 TO LENGTH(BIC_CODE);
+       CHAR_VAL = SUBSTR(BIC_CODE, I, 1);
+       CHAR_POS = RANK(CHAR_VAL);  /* Get ASCII/EBCDIC position */
+       CHECKSUM = CHECKSUM + CHAR_POS;
+       
+       IF I <= 3 THEN  /* First 3 must be letters (bank code) */
+         IF CHAR_POS < RANK('A') | CHAR_POS > RANK('Z') THEN
+           PUT SKIP LIST('Invalid bank code character at ' || TRIM(I));
+     END;
+     
+     PUT SKIP LIST('BIC checksum: ' || TRIM(CHECKSUM));
+     
+     /* COLLATE returns character for given position */
+     CHAR_VAL = COLLATE(65);  /* ASCII 'A' or EBCDIC 'A' */
+     PUT SKIP LIST('COLLATE(65): ' || CHAR_VAL);
+     
+     /* Validate country code is alphabetic */
+     CHAR_VAL = SUBSTR(BIC_CODE, 5, 1);  /* 'U' in CHASUS33 */
+     CHAR_POS = RANK(CHAR_VAL);
+     IF CHAR_POS >= RANK('A') & CHAR_POS <= RANK('Z') THEN
+       PUT SKIP LIST('Country code valid: ' || CHAR_VAL);
+
+   END DEMONSTRATE_RANK_COLLATE;
+
+   /*-----------------------------------------------------------------*/
+   /* Demonstrate BINARY and DECIMAL Built-ins                        */
+   /*-----------------------------------------------------------------*/
+   DEMONSTRATE_BINARY_DECIMAL: PROCEDURE;
+     DECLARE PACKED_VALUE FIXED DEC(15,2) INIT(12345.67);
+     DECLARE BINARY_VALUE FIXED BIN(31);
+     DECLARE BINARY_REP BIT(32);
+     DECLARE DECIMAL_REP CHAR(16);
+     
+     PUT SKIP(2) LIST('--- BINARY/DECIMAL Built-in Demo ---');
+     
+     /* BINARY built-in - get binary representation */
+     BINARY_VALUE = BINARY(PACKED_VALUE, 31, 0);
+     PUT SKIP LIST('BINARY(12345.67): ' || TRIM(BINARY_VALUE));
+     
+     /* DECIMAL built-in - convert to packed decimal */
+     BINARY_VALUE = 54321;
+     PACKED_VALUE = DECIMAL(BINARY_VALUE, 15, 2);
+     PUT SKIP LIST('DECIMAL(54321): ' || TRIM(PACKED_VALUE));
+     
+     /* Use for bit-level currency flag encoding */
+     FX_RATE_TABLE(1).RATE_FLAGS = BINARY(1, 8, 0);  /* Binary 1 */
+     FX_RATE_TABLE(2).RATE_FLAGS = BINARY(128, 8, 0); /* Binary 10000000 */
+     
+     PUT SKIP LIST('Flag encoding complete');
+
+   END DEMONSTRATE_BINARY_DECIMAL;
+
+   /*-----------------------------------------------------------------*/
+   /* Process SWIFT International Payment                             */
+   /*-----------------------------------------------------------------*/
+   PROCESS_SWIFT_PAYMENT: PROCEDURE;
+     DECLARE IS_VALID BIT(1);
+     
+     PUT SKIP(2) LIST('--- SWIFT Payment Processing ---');
+     
+     /* Build SWIFT MT103 message */
+     SWIFT_MESSAGE.MESSAGE_TYPE = '103';
+     SWIFT_MESSAGE.SENDER_BIC = 'CHASUS33XXX';
+     SWIFT_MESSAGE.RECEIVER_BIC = 'DEUTDEFFXXX';  /* Deutsche Bank */
+     SWIFT_MESSAGE.AMOUNT = 50000.00;
+     SWIFT_MESSAGE.CURRENCY = 'EUR';
+     SWIFT_MESSAGE.BENEFICIARY_NAME = 'François Dubois SA';
+     SWIFT_MESSAGE.REMITTANCE_INFO = 'Invoice #12345 - Equipment Purchase';
+     SWIFT_MESSAGE.VALIDATION_FLAGS = '0000000000000000'B;
+     
+     /* Validate BIC codes using RANK */
+     CALL VALIDATE_BIC(SWIFT_MESSAGE.SENDER_BIC, IS_VALID);
+     IF IS_VALID THEN
+       PUT SKIP LIST('Sender BIC valid: ' || SWIFT_MESSAGE.SENDER_BIC);
+     ELSE
+       PUT SKIP LIST('Sender BIC invalid!');
+     
+     /* Format amount with drift */
+     FORMATTED_AMOUNT = SWIFT_MESSAGE.AMOUNT;
+     PUT SKIP LIST('Payment amount: ' || FORMATTED_AMOUNT || ' ' || 
+                  SWIFT_MESSAGE.CURRENCY);
+     
+     /* Display beneficiary with WIDECHAR */
+     PUT SKIP LIST('Beneficiary: ' || SWIFT_MESSAGE.BENEFICIARY_NAME);
+     PUT SKIP LIST('Reference: ' || SWIFT_MESSAGE.REMITTANCE_INFO);
+     
+     /* Set validation flags using BOOL */
+     SWIFT_MESSAGE.VALIDATION_FLAGS = 
+       BOOL('1000000000000000'B, '0100000000000000'B, '0111'B);
+     
+     PUT SKIP LIST('SWIFT payment validated and queued');
+
+   END PROCESS_SWIFT_PAYMENT;
+
+   /*-----------------------------------------------------------------*/
+   /* Validate SWIFT BIC Code                                         */
+   /*-----------------------------------------------------------------*/
+   VALIDATE_BIC: PROCEDURE(BIC, VALID);
+     DECLARE BIC CHAR(11);
+     DECLARE VALID BIT(1);
+     DECLARE I FIXED BIN(15);
+     DECLARE C CHAR(1);
+     DECLARE POS FIXED BIN(15);
+     
+     VALID = '1'B;
+     
+     /* Length check */
+     IF LENGTH(TRIM(BIC)) ¬= 8 & LENGTH(TRIM(BIC)) ¬= 11 THEN DO;
+       VALID = '0'B;
+       RETURN;
+     END;
+     
+     /* First 4 characters must be letters (bank code) */
+     DO I = 1 TO 4;
+       C = SUBSTR(BIC, I, 1);
+       POS = RANK(C);
+       IF POS < RANK('A') | POS > RANK('Z') THEN
+         VALID = '0'B;
+     END;
+     
+     /* Characters 5-6 must be letters (country code) */
+     DO I = 5 TO 6;
+       C = SUBSTR(BIC, I, 1);
+       POS = RANK(C);
+       IF POS < RANK('A') | POS > RANK('Z') THEN
+         VALID = '0'B;
+     END;
+
+   END VALIDATE_BIC;
+
+ END BNKFX;

@@ -1,0 +1,570 @@
+ /*********************************************************************/
+ /*  BNKBATCH.PLI - Batch Data Generator                             */
+ /*                                                                   */
+ /*  Demonstrates:                                                   */
+ /*    - OPTIONS(MAIN) NOEXECOPS for LE batch parameter parsing      */
+ /*    - PARM string handling                                        */
+ /*    - SEQUENTIAL file I/O (OPEN, CLOSE, READ, WRITE)              */
+ /*    - INDEXED (VSAM KSDS) file operations                         */
+ /*    - REGIONAL(1) file (direct access)                            */
+ /*    - PRINT file with ENDPAGE handling                            */
+ /*    - PUT EDIT with complex format items (A,F,E,B,P,X,SKIP etc.)  */
+ /*    - PUT/GET LIST and PUT/GET DATA                               */
+ /*    - STRING pseudo-variable for in-memory formatting             */
+ /*    - RANDOM built-in for data generation                         */
+ /*    - Batch COMMIT strategy (every N records)                     */
+ /*    - ENVIRONMENT options                                         */
+ /*********************************************************************/
+
+ %PROCESS RULES(IBM) MARGINS(2,72) SOURCE XREF;
+ %PROCESS LIMITS(FIXEDDEC(15,2));
+ %PROCESS SQL;
+
+ BNKBATCH: PROCEDURE OPTIONS(MAIN, NOEXECOPS);
+
+   %INCLUDE BNKPKG;
+   %INCLUDE CUSTSTR;
+   %INCLUDE ACCTSTR;
+   %INCLUDE TXNSTR;
+   %INCLUDE SQLCA;
+   %INCLUDE ERRHAND;
+
+   /* File declarations */
+   DECLARE CUSTFILE FILE RECORD KEYED
+     ENVIRONMENT(VSAM INDEXED);
+
+   DECLARE ACCTFILE FILE RECORD KEYED
+     ENVIRONMENT(VSAM INDEXED);
+
+   DECLARE SEQFILE FILE RECORD SEQUENTIAL
+     ENVIRONMENT(CONSECUTIVE BLKSIZE(27920) RECSIZE(2048));
+
+   DECLARE REGFILE FILE RECORD REGIONAL(1)
+     ENVIRONMENT(REGIONAL);
+
+   DECLARE REPORT FILE STREAM OUTPUT PRINT
+     ENV(TITLE('BATCH.REPORT') PAGESIZE(60) LINESIZE(132));
+
+   /* Batch control parameters */
+   DECLARE PARM_STRING           CHAR(100) VARYING;
+   DECLARE CUSTOMER_COUNT        FIXED BIN(31);
+   DECLARE ACCOUNT_COUNT         FIXED BIN(31);
+   DECLARE TRANSACTION_COUNT     FIXED BIN(31);
+   DECLARE COMMIT_INTERVAL       FIXED BIN(31) INIT(100);
+   DECLARE BATCH_MODE            CHAR(10) VARYING;  /* GENERATE/REPORT */
+
+   /* Counters */
+   DECLARE CUSTOMERS_CREATED     FIXED BIN(31) INIT(0);
+   DECLARE ACCOUNTS_CREATED      FIXED BIN(31) INIT(0);
+   DECLARE TRANSACTIONS_CREATED  FIXED BIN(31) INIT(0);
+   DECLARE COMMIT_COUNT          FIXED BIN(31) INIT(0);
+   DECLARE ERROR_COUNT           FIXED BIN(31) INIT(0);
+   DECLARE PAGE_NUMBER           FIXED BIN(31) INIT(1);
+   DECLARE LINE_COUNT            FIXED BIN(31) INIT(0);
+
+   /* Random number seed */
+   DECLARE RANDOM_SEED           FLOAT DEC(16);
+
+   /* Work areas */
+   DECLARE WORK_CUSTOMER         LIKE CUSTOMER_MASTER;
+   DECLARE WORK_ACCOUNT          LIKE ACCOUNT_MASTER;
+   DECLARE WORK_TRANSACTION      LIKE TRANSACTION_LOG;
+
+   /* String formatting buffer */
+   DECLARE FORMAT_BUFFER         CHAR(256);
+
+   /* Name generation arrays */
+   DECLARE FIRST_NAMES(20) CHAR(15) VARYING STATIC INIT(
+     'James', 'Mary', 'John', 'Patricia', 'Robert',
+     'Jennifer', 'Michael', 'Linda', 'William', 'Barbara',
+     'David', 'Elizabeth', 'Richard', 'Susan', 'Joseph',
+     'Jessica', 'Thomas', 'Sarah', 'Charles', 'Karen');
+
+   DECLARE LAST_NAMES(20) CHAR(20) VARYING STATIC INIT(
+     'Smith', 'Johnson', 'Williams', 'Brown', 'Jones',
+     'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez',
+     'Hernandez', 'Lopez', 'Gonzalez', 'Wilson', 'Anderson',
+     'Thomas', 'Taylor', 'Moore', 'Jackson', 'Martin');
+
+   DECLARE CITY_NAMES(10) CHAR(20) VARYING STATIC INIT(
+     'New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix',
+     'Philadelphia', 'San Antonio', 'San Diego', 'Dallas', 'San Jose');
+
+   /*-----------------------------------------------------------------*/
+   /* Main Batch Processing                                           */
+   /*-----------------------------------------------------------------*/
+
+   CALL PARSE_PARM_STRING();
+   CALL INITIALIZE_BATCH();
+   CALL OPEN_FILES();
+
+   /* On ENDPAGE, generate page header */
+   ON ENDPAGE(REPORT) BEGIN;
+     PAGE_NUMBER = PAGE_NUMBER + 1;
+     LINE_COUNT = 0;
+     CALL PRINT_PAGE_HEADER();
+   END;
+
+   SELECT (BATCH_MODE);
+     WHEN ('GENERATE') CALL GENERATE_DATA();
+     WHEN ('REPORT')   CALL PRODUCE_REPORT();
+     OTHERWISE         CALL HANDLE_INVALID_MODE();
+   END;
+
+   CALL CLOSE_FILES();
+   CALL PRINT_BATCH_SUMMARY();
+
+   STOP;
+
+   /*-----------------------------------------------------------------*/
+   /* Parse Parameter String - PARM handling                          */
+   /*-----------------------------------------------------------------*/
+   PARSE_PARM_STRING: PROCEDURE;
+     /* In real LE environment, PARM would come from PARMDD */
+     /* For demonstration, using hardcoded values */
+     
+     PARM_STRING = 'MODE=GENERATE CUST=1000 ACCT=5000 TXN=50000';
+     
+     PUT SKIP LIST('Batch parameters: ' || PARM_STRING);
+
+     /* Parse MODE */
+     IF INDEX(PARM_STRING, 'MODE=GENERATE') > 0 THEN
+       BATCH_MODE = 'GENERATE';
+     ELSE IF INDEX(PARM_STRING, 'MODE=REPORT') > 0 THEN
+       BATCH_MODE = 'REPORT';
+     ELSE
+       BATCH_MODE = 'GENERATE';  /* Default */
+
+     /* Parse counts - simplified extraction */
+     CUSTOMER_COUNT = 1000;
+     ACCOUNT_COUNT = 5000;
+     TRANSACTION_COUNT = 50000;
+
+     PUT SKIP LIST('Batch mode: ' || BATCH_MODE);
+     PUT SKIP LIST('Target counts - Customers: ' || TRIM(CUSTOMER_COUNT) ||
+                  ' Accounts: ' || TRIM(ACCOUNT_COUNT) ||
+                  ' Transactions: ' || TRIM(TRANSACTION_COUNT));
+
+   END PARSE_PARM_STRING;
+
+   /*-----------------------------------------------------------------*/
+   /* Initialize Batch - Random seed initialization                   */
+   /*-----------------------------------------------------------------*/
+   INITIALIZE_BATCH: PROCEDURE;
+     DECLARE CURRENT_TIME FIXED BIN(31);
+     
+     /* Initialize random seed from current time */
+     CURRENT_TIME = SECS(DATETIME());
+     RANDOM_SEED = CURRENT_TIME;
+     
+     /* Prime the random generator */
+     RANDOM_SEED = RANDOM(RANDOM_SEED);
+
+     PUT SKIP LIST('Batch initialized with seed: ' || TRIM(RANDOM_SEED));
+
+   END INITIALIZE_BATCH;
+
+   /*-----------------------------------------------------------------*/
+   /* Open Files                                                      */
+   /*-----------------------------------------------------------------*/
+   OPEN_FILES: PROCEDURE;
+     
+     OPEN FILE(CUSTFILE) KEYED;
+     PUT SKIP LIST('CUSTFILE opened');
+
+     OPEN FILE(ACCTFILE) KEYED;
+     PUT SKIP LIST('ACCTFILE opened');
+
+     OPEN FILE(SEQFILE) OUTPUT;
+     PUT SKIP LIST('SEQFILE opened for output');
+
+     OPEN FILE(REPORT) PAGESIZE(60) LINESIZE(132);
+     PUT SKIP LIST('REPORT file opened');
+
+     CALL PRINT_PAGE_HEADER();
+
+   END OPEN_FILES;
+
+   /*-----------------------------------------------------------------*/
+   /* Generate Data - Demonstrates file output operations            */
+   /*-----------------------------------------------------------------*/
+   GENERATE_DATA: PROCEDURE;
+     DECLARE I FIXED BIN(31);
+
+     PUT SKIP FILE(REPORT) LIST('=== DATA GENERATION RUN ===');
+     PUT SKIP FILE(REPORT) LIST('Run Date: ' || GET_CURRENT_DATE());
+     PUT SKIP FILE(REPORT);
+
+     /* Generate customers */
+     PUT SKIP FILE(REPORT) LIST('Generating ' || TRIM(CUSTOMER_COUNT) ||
+                                ' customers...');
+     
+     DO I = 1 TO CUSTOMER_COUNT;
+       CALL GENERATE_CUSTOMER();
+       CALL WRITE_CUSTOMER();
+       
+       CUSTOMERS_CREATED = CUSTOMERS_CREATED + 1;
+       
+       /* Commit every N records */
+       IF MOD(CUSTOMERS_CREATED, COMMIT_INTERVAL) = 0 THEN DO;
+         EXEC SQL COMMIT WORK;
+         COMMIT_COUNT = COMMIT_COUNT + 1;
+         
+         IF MOD(CUSTOMERS_CREATED, (COMMIT_INTERVAL * 10)) = 0 THEN
+           PUT SKIP FILE(REPORT) LIST('  Created ' || 
+                                     TRIM(CUSTOMERS_CREATED) || 
+                                     ' customers...');
+       END;
+     END;
+
+     PUT SKIP FILE(REPORT) LIST('Customer generation complete: ' ||
+                                TRIM(CUSTOMERS_CREATED));
+     PUT SKIP FILE(REPORT);
+
+     /* Reopen CUSTFILE with ADDBUFF for better throughput */
+     CLOSE FILE(CUSTFILE);
+     OPEN FILE(CUSTFILE) KEYED UPDATE
+       ENVIRONMENT(INDEXED REGIONAL(2) ADDBUFF(3));
+
+     /* Generate accounts */
+     PUT SKIP FILE(REPORT) LIST('Generating ' || TRIM(ACCOUNT_COUNT) ||
+                                ' accounts...');
+     
+     DO I = 1 TO ACCOUNT_COUNT;
+       CALL GENERATE_ACCOUNT();
+       CALL WRITE_ACCOUNT();
+       
+       ACCOUNTS_CREATED = ACCOUNTS_CREATED + 1;
+       
+       IF MOD(ACCOUNTS_CREATED, COMMIT_INTERVAL) = 0 THEN DO;
+         EXEC SQL COMMIT WORK;
+         COMMIT_COUNT = COMMIT_COUNT + 1;
+         
+         IF MOD(ACCOUNTS_CREATED, (COMMIT_INTERVAL * 10)) = 0 THEN
+           PUT SKIP FILE(REPORT) LIST('  Created ' || 
+                                     TRIM(ACCOUNTS_CREATED) || 
+                                     ' accounts...');
+       END;
+     END;
+
+     PUT SKIP FILE(REPORT) LIST('Account generation complete: ' ||
+                                TRIM(ACCOUNTS_CREATED));
+     PUT SKIP FILE(REPORT);
+
+     /* Generate transactions */
+     PUT SKIP FILE(REPORT) LIST('Generating ' || TRIM(TRANSACTION_COUNT) ||
+                                ' transactions...');
+     
+     DO I = 1 TO TRANSACTION_COUNT;
+       CALL GENERATE_TRANSACTION();
+       CALL WRITE_TRANSACTION();
+       
+       TRANSACTIONS_CREATED = TRANSACTIONS_CREATED + 1;
+       
+       IF MOD(TRANSACTIONS_CREATED, COMMIT_INTERVAL) = 0 THEN DO;
+         EXEC SQL COMMIT WORK;
+         COMMIT_COUNT = COMMIT_COUNT + 1;
+         
+         IF MOD(TRANSACTIONS_CREATED, (COMMIT_INTERVAL * 10)) = 0 THEN
+           PUT SKIP FILE(REPORT) LIST('  Created ' || 
+                                     TRIM(TRANSACTIONS_CREATED) ||
+                                     ' transactions...');
+       END;
+     END;
+
+     PUT SKIP FILE(REPORT) LIST('Transaction generation complete: ' ||
+                                TRIM(TRANSACTIONS_CREATED));
+
+     /* Final commit */
+     EXEC SQL COMMIT WORK;
+     COMMIT_COUNT = COMMIT_COUNT + 1;
+
+   END GENERATE_DATA;
+
+   /*-----------------------------------------------------------------*/
+   /* Generate Customer - RANDOM data generation                      */
+   /*-----------------------------------------------------------------*/
+   GENERATE_CUSTOMER: PROCEDURE;
+     DECLARE FIRST_IDX FIXED BIN(15);
+     DECLARE LAST_IDX FIXED BIN(15);
+     DECLARE CITY_IDX FIXED BIN(15);
+     DECLARE CREDIT_SCORE_VAL FIXED DEC(3);
+
+     /* Generate customer ID */
+     WORK_CUSTOMER.CUSTOMER_ID = CUSTOMERS_CREATED + 1000000;
+
+     /* Random name selection */
+     RANDOM_SEED = RANDOM(RANDOM_SEED);
+     FIRST_IDX = FLOOR(RANDOM_SEED * 20) + 1;
+     
+     RANDOM_SEED = RANDOM(RANDOM_SEED);
+     LAST_IDX = FLOOR(RANDOM_SEED * 20) + 1;
+
+     WORK_CUSTOMER.NAME_INFO.FIRST_NAME = FIRST_NAMES(FIRST_IDX);
+     WORK_CUSTOMER.NAME_INFO.LAST_NAME = LAST_NAMES(LAST_IDX);
+     WORK_CUSTOMER.NAME_INFO.TITLE = 'Mr.';
+     WORK_CUSTOMER.NAME_INFO.MIDDLE_INITIAL = 'A';
+     WORK_CUSTOMER.NAME_INFO.FULL_NAME = 
+       TRIM(WORK_CUSTOMER.NAME_INFO.TITLE) || ' ' ||
+       TRIM(WORK_CUSTOMER.NAME_INFO.FIRST_NAME) || ' ' ||
+       WORK_CUSTOMER.NAME_INFO.MIDDLE_INITIAL || ' ' ||
+       TRIM(WORK_CUSTOMER.NAME_INFO.LAST_NAME);
+
+     /* Generate email using STRING pseudo-variable */
+     PUT STRING(FORMAT_BUFFER) EDIT(
+       TRIM(WORK_CUSTOMER.NAME_INFO.FIRST_NAME), '.',
+       TRIM(WORK_CUSTOMER.NAME_INFO.LAST_NAME), '@bank.com')
+       (A, A, A, A);
+     
+     WORK_CUSTOMER.CONTACT_INFO.EMAIL = TRIM(FORMAT_BUFFER);
+
+     /* Random city */
+     RANDOM_SEED = RANDOM(RANDOM_SEED);
+     CITY_IDX = FLOOR(RANDOM_SEED * 10) + 1;
+     WORK_CUSTOMER.ADDRESS_INFO.CITY = CITY_NAMES(CITY_IDX);
+     WORK_CUSTOMER.ADDRESS_INFO.STATE_PROVINCE = 'NY';
+     WORK_CUSTOMER.ADDRESS_INFO.POSTAL_CODE = '10001';
+     WORK_CUSTOMER.ADDRESS_INFO.COUNTRY_CODE = 'USA';
+
+     /* Random credit score 300-850 */
+     RANDOM_SEED = RANDOM(RANDOM_SEED);
+     CREDIT_SCORE_VAL = FLOOR(RANDOM_SEED * 550) + 300;
+     WORK_CUSTOMER.FINANCIAL_INFO.CREDIT_SCORE = CREDIT_SCORE_VAL;
+
+     /* Set dates */
+     WORK_CUSTOMER.DEMOGRAPHIC_INFO.DATE_OF_BIRTH = '1980-01-15';
+     WORK_CUSTOMER.BANKING_INFO.RELATIONSHIP_START = GET_CURRENT_DATE();
+
+     /* Status flags */
+     WORK_CUSTOMER.CUSTOMER_STATUS.ACTIVE = '1'B;
+     WORK_CUSTOMER.CUSTOMER_STATUS.ONLINE_ACCESS = '1'B;
+
+   END GENERATE_CUSTOMER;
+
+   /*-----------------------------------------------------------------*/
+   /* Write Customer - KEYED file write                               */
+   /*-----------------------------------------------------------------*/
+   WRITE_CUSTOMER: PROCEDURE;
+     
+     WRITE FILE(CUSTFILE) FROM(WORK_CUSTOMER)
+       KEYFROM(WORK_CUSTOMER.CUSTOMER_ID);
+
+     /* Also write to sequential file for backup */
+     WRITE FILE(SEQFILE) FROM(WORK_CUSTOMER);
+
+   END WRITE_CUSTOMER;
+
+   /*-----------------------------------------------------------------*/
+   /* Generate Account - More random data                            */
+   /*-----------------------------------------------------------------*/
+   GENERATE_ACCOUNT: PROCEDURE;
+     DECLARE ACCT_TYPE_NUM FIXED BIN(15);
+     DECLARE BALANCE_AMT CURRENCY_T;
+
+     /* Generate account number */
+     PUT STRING(FORMAT_BUFFER) EDIT('A', ACCOUNTS_CREATED + 10000000)
+       (A, F(8));
+     WORK_ACCOUNT.ACCOUNT_NUM = SUBSTR(TRIM(FORMAT_BUFFER), 1, 8);
+
+     /* Random account type 1-5 */
+     RANDOM_SEED = RANDOM(RANDOM_SEED);
+     ACCT_TYPE_NUM = FLOOR(RANDOM_SEED * 5) + 1;
+     WORK_ACCOUNT.ACCOUNT_TYPE = ACCT_TYPE_NUM;
+
+     /* Random balance $0 - $50,000 */
+     RANDOM_SEED = RANDOM(RANDOM_SEED);
+     BALANCE_AMT = RANDOM_SEED * 50000.00;
+     WORK_ACCOUNT.BALANCES.CURRENT_BALANCE = ROUND(BALANCE_AMT, 2);
+     WORK_ACCOUNT.BALANCES.AVAILABLE_BALANCE = 
+       WORK_ACCOUNT.BALANCES.CURRENT_BALANCE;
+
+     /* Assign to random customer */
+     RANDOM_SEED = RANDOM(RANDOM_SEED);
+     WORK_ACCOUNT.CUSTOMER_ID = FLOOR(RANDOM_SEED * CUSTOMERS_CREATED) + 
+                                1000000;
+
+     WORK_ACCOUNT.SORT_CODE = SYSTEM_SORT_CODE;
+     WORK_ACCOUNT.DATES.OPENED_DATE = GET_CURRENT_DATE();
+     WORK_ACCOUNT.ACCOUNT_STATUS.ACTIVE = '1'B;
+
+   END GENERATE_ACCOUNT;
+
+   /*-----------------------------------------------------------------*/
+   /* Write Account                                                   */
+   /*-----------------------------------------------------------------*/
+   WRITE_ACCOUNT: PROCEDURE;
+     
+     WRITE FILE(ACCTFILE) FROM(WORK_ACCOUNT)
+       KEYFROM(WORK_ACCOUNT.ACCOUNT_NUM);
+
+   END WRITE_ACCOUNT;
+
+   /*-----------------------------------------------------------------*/
+   /* Generate Transaction                                            */
+   /*-----------------------------------------------------------------*/
+   GENERATE_TRANSACTION: PROCEDURE;
+     DECLARE TXN_TYPE_NUM FIXED BIN(15);
+     DECLARE TXN_AMT CURRENCY_T;
+
+     /* Random transaction type */
+     RANDOM_SEED = RANDOM(RANDOM_SEED);
+     TXN_TYPE_NUM = FLOOR(RANDOM_SEED * 7) + 1;
+     WORK_TRANSACTION.TXN_TYPE = TXN_TYPE_NUM;
+
+     /* Random amount $1 - $5000 */
+     RANDOM_SEED = RANDOM(RANDOM_SEED);
+     TXN_AMT = (RANDOM_SEED * 5000.00) + 1.00;
+     WORK_TRANSACTION.AMOUNT_INFO.TXN_AMOUNT = ROUND(TXN_AMT, 2);
+
+     WORK_TRANSACTION.TIMESTAMP_INFO.TXN_DATE = GET_CURRENT_DATE();
+     WORK_TRANSACTION.TIMESTAMP_INFO.TXN_TIME = GET_CURRENT_TIME();
+
+   END GENERATE_TRANSACTION;
+
+   /*-----------------------------------------------------------------*/
+   /* Write Transaction - DB2 INSERT                                  */
+   /*-----------------------------------------------------------------*/
+   WRITE_TRANSACTION: PROCEDURE;
+     
+     EXEC SQL
+       INSERT INTO TRANSACTION_TABLE
+         (TXN_TYPE, TXN_AMOUNT, TXN_DATE, TXN_TIME)
+       VALUES
+         (:WORK_TRANSACTION.TXN_TYPE,
+          :WORK_TRANSACTION.AMOUNT_INFO.TXN_AMOUNT,
+          :WORK_TRANSACTION.TIMESTAMP_INFO.TXN_DATE,
+          :WORK_TRANSACTION.TIMESTAMP_INFO.TXN_TIME);
+
+     IF SQLCODE ¬= SQL_SUCCESS THEN
+       ERROR_COUNT = ERROR_COUNT + 1;
+
+   END WRITE_TRANSACTION;
+
+   /*-----------------------------------------------------------------*/
+   /* Produce Report - PUT EDIT with complex formatting               */
+   /*-----------------------------------------------------------------*/
+   PRODUCE_REPORT: PROCEDURE;
+     
+     PUT SKIP(2) FILE(REPORT) EDIT
+       ('BANKING SYSTEM SUMMARY REPORT')
+       (COLUMN(40), A);
+
+     PUT SKIP(2) FILE(REPORT) EDIT
+       ('Report Date:',GET_CURRENT_DATE(),
+        'Page:',PAGE_NUMBER)
+       (A, X(2), A, X(40), A, X(2), F(3));
+
+     PUT SKIP(3) FILE(REPORT) EDIT
+       ('=' || COPY('=', 130))
+       (A);
+
+     /* Customer summary section */
+     PUT SKIP(2) FILE(REPORT) EDIT
+       ('CUSTOMER SUMMARY')
+       (COLUMN(50), A);
+
+     PUT SKIP FILE(REPORT) EDIT
+       ('Total Customers:', CUSTOMERS_CREATED)
+       (X(5), A, X(3), F(10));
+
+     PUT SKIP FILE(REPORT) EDIT
+       ('Active Customers:', CUSTOMERS_CREATED)
+       (X(5), A, X(3), F(10));
+
+     /* Account summary with formatted numbers */
+     PUT SKIP(3) FILE(REPORT) EDIT
+       ('ACCOUNT SUMMARY')
+       (COLUMN(50), A);
+
+     PUT SKIP FILE(REPORT) EDIT
+       ('Total Accounts:', ACCOUNTS_CREATED,
+        'Total Balance:', '$', 123456789.25)
+       (X(5), A, X(3), F(10), X(10), A, X(3), A, F(15,2));
+
+     /* Transaction summary */
+     PUT SKIP(3) FILE(REPORT) EDIT
+       ('TRANSACTION SUMMARY')
+       (COLUMN(48), A);
+
+     PUT SKIP FILE(REPORT) EDIT
+       ('Transactions Processed:', TRANSACTIONS_CREATED)
+       (X(5), A, X(3), F(10));
+
+     PUT SKIP FILE(REPORT) EDIT
+       ('Errors Encountered:', ERROR_COUNT)
+       (X(5), A, X(3), F(10));
+
+     PUT SKIP FILE(REPORT) EDIT
+       ('Commits Executed:', COMMIT_COUNT)
+       (X(5), A, X(3), F(10));
+
+   END PRODUCE_REPORT;
+
+   /*-----------------------------------------------------------------*/
+   /* Print Page Header - Demonstrates PAGE, SKIP, COLUMN             */
+   /*-----------------------------------------------------------------*/
+   PRINT_PAGE_HEADER: PROCEDURE;
+     
+     PUT FILE(REPORT) PAGE;
+     PUT SKIP FILE(REPORT) EDIT
+       ('Banking Batch Processing System')
+       (COLUMN(50), A);
+
+     PUT SKIP FILE(REPORT) EDIT
+       ('Page ', PAGE_NUMBER)
+       (COLUMN(120), A, F(4));
+
+     PUT SKIP FILE(REPORT) EDIT
+       (COPY('-', 132))
+       (A);
+
+     PUT SKIP(2) FILE(REPORT);
+
+     LINE_COUNT = 5;
+
+   END PRINT_PAGE_HEADER;
+
+   /*-----------------------------------------------------------------*/
+   /* Print Batch Summary                                             */
+   /*-----------------------------------------------------------------*/
+   PRINT_BATCH_SUMMARY: PROCEDURE;
+     
+     PUT SKIP(3);
+     PUT SKIP LIST('');
+     PUT SKIP LIST('=== BATCH PROCESSING COMPLETE ===');
+     PUT SKIP LIST('');
+     PUT SKIP LIST('Statistics:');
+     PUT SKIP LIST('  Customers created: ' || TRIM(CUSTOMERS_CREATED));
+     PUT SKIP LIST('  Accounts created: ' || TRIM(ACCOUNTS_CREATED));
+     PUT SKIP LIST('  Transactions created: ' || TRIM(TRANSACTIONS_CREATED));
+     PUT SKIP LIST('  Database commits: ' || TRIM(COMMIT_COUNT));
+     PUT SKIP LIST('  Errors encountered: ' || TRIM(ERROR_COUNT));
+     PUT SKIP LIST('');
+
+   END PRINT_BATCH_SUMMARY;
+
+   /*-----------------------------------------------------------------*/
+   /* Close Files                                                     */
+   /*-----------------------------------------------------------------*/
+   CLOSE_FILES: PROCEDURE;
+     
+     CLOSE FILE(CUSTFILE);
+     CLOSE FILE(ACCTFILE);
+     CLOSE FILE(SEQFILE);
+     CLOSE FILE(REPORT);
+
+     PUT SKIP LIST('All files closed');
+
+   END CLOSE_FILES;
+
+   /*-----------------------------------------------------------------*/
+   /* Handle Invalid Mode                                            */
+   /*-----------------------------------------------------------------*/
+   HANDLE_INVALID_MODE: PROCEDURE;
+     
+     PUT SKIP LIST('ERROR: Invalid batch mode: ' || BATCH_MODE);
+     PUT SKIP LIST('Valid modes: GENERATE, REPORT');
+
+   END HANDLE_INVALID_MODE;
+
+ END BNKBATCH;
